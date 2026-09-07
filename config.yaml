@@ -1,0 +1,9 @@
+tasks:
+  - name: "whois_lookup"
+    enabled: true
+    params:
+      timeout: 10s
+  - name: "html_scan"
+    enabled: true
+    params:
+      max_depth: 2

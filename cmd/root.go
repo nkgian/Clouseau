@@ -9,7 +9,7 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "clouseau [url]",
-	Short: "A CLI tool to analyze websites",
+	Short: "A CLI tool to analyze websites. Poorly.",
 	Args:  cobra.ExactArgs(1), // Ensures exactly one argument (the URL) is provided
 	Run: func(cmd *cobra.Command, args []string) {
 		url := args[0]
@@ -28,5 +28,5 @@ func Execute() {
 }
 
 func init() {
-	// define global flags, like --config config.yaml
+	// define global	 flags, like --config config.yaml
 }
