@@ -7,4 +7,5 @@ type Analyzer interface {
 var Registry = map[string]Analyzer{
 	"whois_lookup": &WhoisAnalyzer{},
 	"html_scan":    &HTMLAnalyzer{},
+	"ip_lookup":	&IpLookup{}
 }

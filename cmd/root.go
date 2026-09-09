@@ -57,7 +57,6 @@ var rootCmd = &cobra.Command{
 		}
 		
 		fmt.Println("---------------------------------------------------")
-		fmt.Println("Analysis complete.")
 	},
 }
 
