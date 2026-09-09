@@ -1,9 +1,12 @@
 tasks:
   - name: "whois_lookup"
-    enabled: true
     params:
-      timeout: 10s
+      server: "whois.verisign-grs.com"
+  
   - name: "html_scan"
-    enabled: true
     params:
-      max_depth: 2
+      max_depth: 3
+      extract_links: true
+
+  - name: "ip_lookup"
+    params: {}
