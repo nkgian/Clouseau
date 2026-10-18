@@ -73,12 +73,13 @@ type TLSInfo struct {
 }
 
 type IPResult struct {
-	Host      string        `json:"host"`
-	Records   DNSRecords    `json:"records"`
-	Email     EmailSecurity `json:"email_security"`
-	Addresses []IPAddress   `json:"addresses"`
-	TLS       *TLSInfo      `json:"tls,omitempty"`
-	Warnings  []string      `json:"warnings,omitempty"`
+	Host             string                  `json:"host"`
+	Records          DNSRecords              `json:"records"`
+	Email            EmailSecurity           `json:"email_security"`
+	Addresses        []IPAddress             `json:"addresses"`
+	TLS              *TLSInfo                `json:"tls,omitempty"`
+	CloudflareOrigin *CloudflareOriginResult `json:"cloudflare_origin,omitempty"`
+	Warnings         []string                `json:"warnings,omitempty"`
 }
 
 type ASInfo struct {
@@ -209,6 +210,16 @@ func (r *IPResult) String() string {
 		}
 		if len(r.TLS.DNSNames) > 0 {
 			fmt.Fprintf(&b, "    san: %s\n", strings.Join(r.TLS.DNSNames, ", "))
+		}
+	}
+
+	if r.CloudflareOrigin != nil {
+		fmt.Fprintf(&b, "  cloudflare origin candidates (%d subdomains resolved):\n", r.CloudflareOrigin.Checked)
+		if len(r.CloudflareOrigin.Candidates) == 0 {
+			fmt.Fprintln(&b, "    none found")
+		}
+		for _, candidate := range r.CloudflareOrigin.Candidates {
+			fmt.Fprintf(&b, "    %s -> %s\n", candidate.Subdomain, strings.Join(candidate.IPs, ", "))
 		}
 	}
 
@@ -369,8 +380,28 @@ func (w *IpLookup) Run(url string, params map[string]interface{}) (interface{}, 
 		}
 	}
 
+	if !boolParam(params, "skip_origin_lookup", false) && net.ParseIP(host) == nil && hasProvider(addresses, "Cloudflare") {
+		origin, err := lookupCloudflareOrigins(host, params)
+		if err != nil {
+			result.warnf("cloudflare origin lookup: %v", err)
+		} else {
+			result.CloudflareOrigin = origin
+		}
+	}
+
 	result.Addresses = addresses
 	return result, nil
+}
+
+func hasProvider(addresses []IPAddress, label string) bool {
+	for _, addr := range addresses {
+		for _, provider := range addr.Provider {
+			if provider == label {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func classifyAddresses(ips []string) ([]IPAddress, []string, []string) {
