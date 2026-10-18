@@ -58,3 +58,24 @@ func boolParam(params map[string]interface{}, key string, fallback bool) bool {
 	}
 	return fallback
 }
+
+func intListParam(params map[string]interface{}, key string) []int {
+	list, ok := params[key].([]interface{})
+	if !ok {
+		return nil
+	}
+	values := make([]int, 0, len(list))
+	for _, item := range list {
+		switch v := item.(type) {
+		case int:
+			values = append(values, v)
+		case int64:
+			values = append(values, int(v))
+		case uint64:
+			values = append(values, int(v))
+		case float64:
+			values = append(values, int(v))
+		}
+	}
+	return values
+}

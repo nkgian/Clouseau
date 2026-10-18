@@ -9,4 +9,9 @@ tasks:
       extract_links: true
 
   - name: "ip_lookup"
-    params: {}
+    params:
+      tls: true
+      dnsbl: true
+      tor: true
+      netblock: true
+      scan_ports: true

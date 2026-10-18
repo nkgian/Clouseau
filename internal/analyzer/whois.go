@@ -64,7 +64,7 @@ func (w *WhoisAnalyzer) Run(url string, params map[string]interface{}) (interfac
 }
 
 func queryWhois(server, query string) (string, error) {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(server, "43"), 10*time.Second)
+	conn, err := net.DialTimeout("tcp", whoisAddress(server), 10*time.Second)
 	if err != nil {
 		return "", err
 	}
@@ -83,6 +83,13 @@ func queryWhois(server, query string) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+func whoisAddress(server string) string {
+	if _, _, err := net.SplitHostPort(server); err == nil {
+		return server
+	}
+	return net.JoinHostPort(server, "43")
 }
 
 func discoverWhoisServer(domain string) (string, error) {

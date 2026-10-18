@@ -3,27 +3,49 @@ package analyzer
 import (
 	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 type IpLookup struct{}
 
 type IPAddress struct {
-	IP       string   `json:"ip"`
-	Version  int      `json:"version"`
-	Scope    string   `json:"scope"`
-	PTR      []string `json:"ptr,omitempty"`
-	ASN      string   `json:"asn,omitempty"`
-	ASName   string   `json:"as_name,omitempty"`
-	Country  string   `json:"country,omitempty"`
-	Prefix   string   `json:"prefix,omitempty"`
-	Provider []string `json:"provider,omitempty"`
-	DNSBL    []string `json:"dnsbl,omitempty"`
+	IP               string        `json:"ip"`
+	Version          int           `json:"version"`
+	Scope            string        `json:"scope"`
+	PTR              []string      `json:"ptr,omitempty"`
+	ForwardConfirmed bool          `json:"forward_confirmed,omitempty"`
+	ASN              string        `json:"asn,omitempty"`
+	ASName           string        `json:"as_name,omitempty"`
+	Country          string        `json:"country,omitempty"`
+	Prefix           string        `json:"prefix,omitempty"`
+	Provider         []string      `json:"provider,omitempty"`
+	TorExit          bool          `json:"tor_exit,omitempty"`
+	OpenPorts        []int         `json:"open_ports,omitempty"`
+	Netblock         *NetblockInfo `json:"netblock,omitempty"`
+	DNSBL            []string      `json:"dnsbl,omitempty"`
+}
+
+type NetblockInfo struct {
+	Server       string   `json:"server"`
+	Organization string   `json:"organization,omitempty"`
+	AbuseEmails  []string `json:"abuse_emails,omitempty"`
+}
+
+type EmailSecurity struct {
+	SPF         []string `json:"spf,omitempty"`
+	DMARC       string   `json:"dmarc,omitempty"`
+	DMARCPolicy string   `json:"dmarc_policy,omitempty"`
+	BIMI        string   `json:"bimi,omitempty"`
 }
 
 type DNSRecords struct {
@@ -46,14 +68,17 @@ type TLSInfo struct {
 	DaysLeft    int       `json:"days_left"`
 	DNSNames    []string  `json:"dns_names,omitempty"`
 	SelfSigned  bool      `json:"self_signed"`
+	Verified    bool      `json:"verified"`
+	VerifyError string    `json:"verify_error,omitempty"`
 }
 
 type IPResult struct {
-	Host      string      `json:"host"`
-	Records   DNSRecords  `json:"records"`
-	Addresses []IPAddress `json:"addresses"`
-	TLS       *TLSInfo    `json:"tls,omitempty"`
-	Warnings  []string    `json:"warnings,omitempty"`
+	Host      string        `json:"host"`
+	Records   DNSRecords    `json:"records"`
+	Email     EmailSecurity `json:"email_security"`
+	Addresses []IPAddress   `json:"addresses"`
+	TLS       *TLSInfo      `json:"tls,omitempty"`
+	Warnings  []string      `json:"warnings,omitempty"`
 }
 
 type ASInfo struct {
@@ -128,6 +153,10 @@ var dnsblZones = []string{
 	"dnsbl-1.uceprotect.net",
 }
 
+var defaultPorts = []int{21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 5432, 6379, 8080, 8443, 27017}
+
+var emailPattern = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+
 func (r *IPResult) warnf(format string, args ...interface{}) {
 	r.Warnings = append(r.Warnings, fmt.Sprintf(format, args...))
 }
@@ -150,6 +179,20 @@ func (r *IPResult) String() string {
 		}
 	}
 
+	if len(r.Email.SPF) > 0 {
+		printValues(&b, "  ", "SPF", r.Email.SPF)
+	}
+	if r.Email.DMARC != "" {
+		policy := r.Email.DMARCPolicy
+		if policy == "" {
+			policy = "none"
+		}
+		fmt.Fprintf(&b, "  DMARC: %s (policy: %s)\n", truncate(r.Email.DMARC, 250), policy)
+	}
+	if r.Email.BIMI != "" {
+		fmt.Fprintf(&b, "  BIMI: %s\n", truncate(r.Email.BIMI, 250))
+	}
+
 	if r.TLS != nil {
 		fmt.Fprintf(&b, "  TLS: %s %s\n", r.TLS.Version, r.TLS.CipherSuite)
 		fmt.Fprintf(&b, "    subject: %s\n", r.TLS.Subject)
@@ -159,6 +202,11 @@ func (r *IPResult) String() string {
 		if r.TLS.SelfSigned {
 			fmt.Fprintln(&b, "    self-signed: yes")
 		}
+		if r.TLS.Verified {
+			fmt.Fprintln(&b, "    verified: yes")
+		} else {
+			fmt.Fprintf(&b, "    verified: no (%s)\n", r.TLS.VerifyError)
+		}
 		if len(r.TLS.DNSNames) > 0 {
 			fmt.Fprintf(&b, "    san: %s\n", strings.Join(r.TLS.DNSNames, ", "))
 		}
@@ -167,10 +215,23 @@ func (r *IPResult) String() string {
 	for _, addr := range r.Addresses {
 		fmt.Fprintf(&b, "  -- %s (IPv%d, %s) --\n", addr.IP, addr.Version, addr.Scope)
 		printValues(&b, "    ", "PTR", addr.PTR)
+		if len(addr.PTR) > 0 && !addr.ForwardConfirmed {
+			fmt.Fprintln(&b, "    forward-confirmed PTR: no")
+		}
 		if addr.ASN != "" {
 			fmt.Fprintf(&b, "    ASN: AS%s %s (%s) %s\n", addr.ASN, addr.ASName, addr.Country, addr.Prefix)
 		}
 		printValues(&b, "    ", "provider", addr.Provider)
+		if addr.TorExit {
+			fmt.Fprintln(&b, "    tor exit node: yes")
+		}
+		if len(addr.OpenPorts) > 0 {
+			fmt.Fprintf(&b, "    open ports: %s\n", joinInts(addr.OpenPorts))
+		}
+		if addr.Netblock != nil {
+			fmt.Fprintf(&b, "    netblock: %s (via %s)\n", addr.Netblock.Organization, addr.Netblock.Server)
+			printValues(&b, "      ", "abuse", addr.Netblock.AbuseEmails)
+		}
 		printValues(&b, "    ", "dnsbl", addr.DNSBL)
 	}
 
@@ -201,10 +262,12 @@ func (w *IpLookup) Run(url string, params map[string]interface{}) (interface{}, 
 
 	result := &IPResult{Host: host}
 
-	if cname, err := net.LookupCNAME(host); err != nil {
-		result.warnf("cname lookup: %v", err)
-	} else {
-		result.Records.CNAME = cname
+	if net.ParseIP(host) == nil {
+		if cname, err := net.LookupCNAME(host); err != nil {
+			result.warnf("cname lookup: %v", err)
+		} else {
+			result.Records.CNAME = cname
+		}
 	}
 
 	addresses, v4, v6 := classifyAddresses(ips)
@@ -216,6 +279,7 @@ func (w *IpLookup) Run(url string, params map[string]interface{}) (interface{}, 
 	result.Records.NS = lookupNS(host)
 	result.Records.MX = lookupMX(host)
 	result.Records.TXT = lookupTXT(host)
+	result.Email = lookupEmailSecurity(host, result.Records.TXT)
 
 	for i := range addresses {
 		if names, err := net.LookupAddr(addresses[i].IP); err == nil {
@@ -224,6 +288,7 @@ func (w *IpLookup) Run(url string, params map[string]interface{}) (interface{}, 
 			}
 			sort.Strings(names)
 			addresses[i].PTR = names
+			addresses[i].ForwardConfirmed = forwardConfirmed(addresses[i].IP, names)
 		}
 	}
 
@@ -253,6 +318,45 @@ func (w *IpLookup) Run(url string, params map[string]interface{}) (interface{}, 
 			if addresses[i].Scope == "public" {
 				addresses[i].DNSBL = checkDNSBL(addresses[i].IP)
 			}
+		}
+	}
+
+	if boolParam(params, "tor", false) {
+		exits, err := lookupTorExits(addresses)
+		if err != nil {
+			result.warnf("tor exit check: %v", err)
+		} else {
+			for i := range addresses {
+				addresses[i].TorExit = exits[addresses[i].IP]
+			}
+		}
+	}
+
+	if boolParam(params, "netblock", false) {
+		for i := range addresses {
+			if addresses[i].Scope != "public" {
+				continue
+			}
+			info, err := lookupNetblock(addresses[i].IP)
+			if err != nil {
+				result.warnf("netblock lookup for %s: %v", addresses[i].IP, err)
+				continue
+			}
+			addresses[i].Netblock = info
+		}
+	}
+
+	if boolParam(params, "scan_ports", false) {
+		ports := intListParam(params, "ports")
+		if len(ports) == 0 {
+			ports = defaultPorts
+		}
+		timeout := time.Duration(intParam(params, "port_timeout_ms", 2000)) * time.Millisecond
+		for i := range addresses {
+			if !scannableScope(addresses[i].Scope) {
+				continue
+			}
+			addresses[i].OpenPorts = scanPorts(addresses[i].IP, ports, timeout)
 		}
 	}
 
@@ -451,7 +555,10 @@ func checkDNSBL(rawIP string) []string {
 
 func inspectTLS(host string, port int) (*TLSInfo, error) {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
-	conn, err := tls.DialWithDialer(dialer, "tcp", net.JoinHostPort(host, strconv.Itoa(port)), &tls.Config{ServerName: host})
+	conn, err := tls.DialWithDialer(dialer, "tcp", net.JoinHostPort(host, strconv.Itoa(port)), &tls.Config{
+		ServerName:         host,
+		InsecureSkipVerify: true,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -463,7 +570,7 @@ func inspectTLS(host string, port int) (*TLSInfo, error) {
 	}
 	leaf := state.PeerCertificates[0]
 
-	return &TLSInfo{
+	info := &TLSInfo{
 		ServerName:  state.ServerName,
 		Version:     tls.VersionName(state.Version),
 		CipherSuite: tls.CipherSuiteName(state.CipherSuite),
@@ -474,5 +581,266 @@ func inspectTLS(host string, port int) (*TLSInfo, error) {
 		DaysLeft:    int(time.Until(leaf.NotAfter).Hours() / 24),
 		DNSNames:    leaf.DNSNames,
 		SelfSigned:  bytes.Equal(leaf.RawIssuer, leaf.RawSubject),
+	}
+
+	options := x509.VerifyOptions{
+		DNSName:       host,
+		Intermediates: x509.NewCertPool(),
+	}
+	for _, certificate := range state.PeerCertificates[1:] {
+		options.Intermediates.AddCert(certificate)
+	}
+	if _, err := leaf.Verify(options); err != nil {
+		info.VerifyError = err.Error()
+	} else {
+		info.Verified = true
+	}
+
+	return info, nil
+}
+
+func lookupEmailSecurity(host string, txtRecords []string) EmailSecurity {
+	security := EmailSecurity{}
+
+	for _, txt := range txtRecords {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(txt)), "v=spf1") {
+			security.SPF = append(security.SPF, txt)
+		}
+	}
+
+	if records, err := net.LookupTXT("_dmarc." + host); err == nil {
+		for _, txt := range records {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(txt)), "v=dmarc1") {
+				security.DMARC = txt
+				security.DMARCPolicy = dmarcPolicy(txt)
+				break
+			}
+		}
+	}
+
+	if records, err := net.LookupTXT("default._bimi." + host); err == nil {
+		for _, txt := range records {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(txt)), "v=bimi1") {
+				security.BIMI = txt
+				break
+			}
+		}
+	}
+
+	return security
+}
+
+func dmarcPolicy(record string) string {
+	for _, part := range strings.Split(record, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(strings.ToLower(part), "p=") {
+			return strings.TrimSpace(part[2:])
+		}
+	}
+	return ""
+}
+
+func forwardConfirmed(rawIP string, names []string) bool {
+	ip := net.ParseIP(rawIP)
+	if ip == nil {
+		return false
+	}
+	for _, name := range names {
+		answers, err := net.LookupHost(name)
+		if err != nil {
+			continue
+		}
+		for _, answer := range answers {
+			if parsed := net.ParseIP(answer); parsed != nil && parsed.Equal(ip) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func lookupNetblock(rawIP string) (*NetblockInfo, error) {
+	referral, err := queryWhois("whois.iana.org", rawIP)
+	if err != nil {
+		return nil, err
+	}
+
+	server := referralServer(referral)
+	if server == "" {
+		return nil, fmt.Errorf("no whois referral found for %s", rawIP)
+	}
+
+	response, err := queryWhois(server, rawIP)
+	if err != nil {
+		return nil, err
+	}
+
+	if next := referralServer(response); next != "" && !strings.EqualFold(next, server) {
+		if second, err := queryWhois(next, rawIP); err == nil {
+			server = next
+			response = second
+		}
+	}
+
+	return &NetblockInfo{
+		Server:       server,
+		Organization: netblockOrg(response),
+		AbuseEmails:  abuseEmails(response),
 	}, nil
+}
+
+func referralServer(response string) string {
+	for _, line := range strings.Split(response, "\n") {
+		key, value := fieldValue(strings.TrimRight(line, "\r"))
+		switch strings.ToLower(key) {
+		case "refer", "whois":
+			host := firstField(value)
+			if host != "" && strings.Contains(host, ".") && !strings.ContainsAny(host, "/\\") {
+				return host
+			}
+		}
+	}
+	return ""
+}
+
+func firstField(value string) string {
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func fieldValue(line string) (string, string) {
+	idx := strings.Index(line, ":")
+	if idx <= 0 {
+		return "", ""
+	}
+	return strings.TrimSpace(line[:idx]), strings.TrimSpace(line[idx+1:])
+}
+
+func netblockOrg(response string) string {
+	values := map[string]string{}
+	for _, line := range strings.Split(response, "\n") {
+		key, value := fieldValue(strings.TrimRight(line, "\r"))
+		if key == "" || value == "" {
+			continue
+		}
+		lower := strings.ToLower(key)
+		if _, exists := values[lower]; !exists {
+			values[lower] = value
+		}
+	}
+
+	for _, key := range []string{"orgname", "org-name", "organisation", "organization", "owner", "descr"} {
+		if value := values[key]; value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func abuseEmails(response string) []string {
+	seen := map[string]bool{}
+	var emails []string
+	for _, line := range strings.Split(response, "\n") {
+		key, value := fieldValue(strings.TrimRight(line, "\r"))
+		if key == "" || !strings.Contains(strings.ToLower(key), "abuse") {
+			continue
+		}
+		for _, email := range emailPattern.FindAllString(value, -1) {
+			if !seen[email] {
+				seen[email] = true
+				emails = append(emails, email)
+			}
+		}
+	}
+	sort.Strings(emails)
+	return emails
+}
+
+func lookupTorExits(addresses []IPAddress) (map[string]bool, error) {
+	needed := false
+	for _, addr := range addresses {
+		if addr.Scope == "public" {
+			needed = true
+			break
+		}
+	}
+	if !needed {
+		return nil, nil
+	}
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	response, err := client.Get("https://check.torproject.org/torbulkexitlist")
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("tor exit list returned %s", response.Status)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+
+	exits := map[string]bool{}
+	for _, line := range strings.Split(string(body), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			exits[line] = true
+		}
+	}
+	return exits, nil
+}
+
+func scanPorts(rawIP string, ports []int, timeout time.Duration) []int {
+	var (
+		mu   sync.Mutex
+		wg   sync.WaitGroup
+		open []int
+	)
+	semaphore := make(chan struct{}, 32)
+
+	for _, port := range ports {
+		wg.Add(1)
+		go func(port int) {
+			defer wg.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			conn, err := net.DialTimeout("tcp", net.JoinHostPort(rawIP, strconv.Itoa(port)), timeout)
+			if err != nil {
+				return
+			}
+			conn.Close()
+
+			mu.Lock()
+			open = append(open, port)
+			mu.Unlock()
+		}(port)
+	}
+
+	wg.Wait()
+	sort.Ints(open)
+	return open
+}
+
+func scannableScope(scope string) bool {
+	switch scope {
+	case "public", "private", "loopback":
+		return true
+	default:
+		return false
+	}
+}
+
+func joinInts(values []int) string {
+	parts := make([]string, len(values))
+	for i, value := range values {
+		parts[i] = strconv.Itoa(value)
+	}
+	return strings.Join(parts, ", ")
 }
