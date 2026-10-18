@@ -109,7 +109,7 @@ func lookupCloudflareOrigins(host string, params map[string]interface{}) (*Cloud
 	return result, nil
 }
 
-// Using same subdomain list as https://github.com/bimantaraz/bypass-cloudflare-get-real-IP
+// See cloudflare_subdomains.txt for dirs
 func cloudflareSubdomains(params map[string]interface{}) ([]string, error) {
 	path := stringParam(params, "subdomains_file")
 	if path == "" {
