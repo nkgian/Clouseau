@@ -50,12 +50,14 @@ var rootCmd = &cobra.Command{
 				continue
 			}
 
-			err := analyzerInstance.Run(url, task.Params)
+			result, err := analyzerInstance.Run(url, task.Params)
 			if err != nil {
 				fmt.Printf("[-] Error running %s: %v\n", task.Name, err)
+				continue
 			}
+			fmt.Println(result)
 		}
-		
+
 		fmt.Println("---------------------------------------------------")
 	},
 }
@@ -69,7 +71,7 @@ func Execute() {
 
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "config.yaml", "path to config file")
-	
+
 	// Add the boolean flags for skipping specific modules.
 	// Format: variable pointer, "flag-name", shorthand (empty here), default value, "description"
 	rootCmd.Flags().BoolVar(&skipWhois, "skip-whois", false, "Skip the WHOIS lookup module")
