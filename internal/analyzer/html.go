@@ -14,18 +14,18 @@ import (
 type HTMLAnalyzer struct{}
 
 type HTMLPage struct {
-	URL         string
-	Status      int
-	Title       string
-	ContentType string
-	Bytes       int
-	Links       []string
+	URL         string   `json:"url"`
+	Status      int      `json:"status"`
+	Title       string   `json:"title,omitempty"`
+	ContentType string   `json:"content_type,omitempty"`
+	Bytes       int      `json:"bytes"`
+	Links       []string `json:"links,omitempty"`
 }
 
 type HTMLResult struct {
-	StartURL string
-	Pages    []HTMLPage
-	Links    []string
+	StartURL string     `json:"start_url"`
+	Pages    []HTMLPage `json:"pages"`
+	Links    []string   `json:"links,omitempty"`
 }
 
 const (

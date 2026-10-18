@@ -14,46 +14,46 @@ import (
 type IpLookup struct{}
 
 type IPAddress struct {
-	IP       string
-	Version  int
-	Scope    string
-	PTR      []string
-	ASN      string
-	ASName   string
-	Country  string
-	Prefix   string
-	Provider []string
-	DNSBL    []string
+	IP       string   `json:"ip"`
+	Version  int      `json:"version"`
+	Scope    string   `json:"scope"`
+	PTR      []string `json:"ptr,omitempty"`
+	ASN      string   `json:"asn,omitempty"`
+	ASName   string   `json:"as_name,omitempty"`
+	Country  string   `json:"country,omitempty"`
+	Prefix   string   `json:"prefix,omitempty"`
+	Provider []string `json:"provider,omitempty"`
+	DNSBL    []string `json:"dnsbl,omitempty"`
 }
 
 type DNSRecords struct {
-	A     []string
-	AAAA  []string
-	MX    []string
-	NS    []string
-	TXT   []string
-	CNAME string
+	A     []string `json:"a,omitempty"`
+	AAAA  []string `json:"aaaa,omitempty"`
+	MX    []string `json:"mx,omitempty"`
+	NS    []string `json:"ns,omitempty"`
+	TXT   []string `json:"txt,omitempty"`
+	CNAME string   `json:"cname,omitempty"`
 }
 
 type TLSInfo struct {
-	ServerName  string
-	Version     string
-	CipherSuite string
-	Subject     string
-	Issuer      string
-	NotBefore   time.Time
-	NotAfter    time.Time
-	DaysLeft    int
-	DNSNames    []string
-	SelfSigned  bool
+	ServerName  string    `json:"server_name,omitempty"`
+	Version     string    `json:"version"`
+	CipherSuite string    `json:"cipher_suite"`
+	Subject     string    `json:"subject"`
+	Issuer      string    `json:"issuer"`
+	NotBefore   time.Time `json:"not_before"`
+	NotAfter    time.Time `json:"not_after"`
+	DaysLeft    int       `json:"days_left"`
+	DNSNames    []string  `json:"dns_names,omitempty"`
+	SelfSigned  bool      `json:"self_signed"`
 }
 
 type IPResult struct {
-	Host      string
-	Records   DNSRecords
-	Addresses []IPAddress
-	TLS       *TLSInfo
-	Warnings  []string
+	Host      string      `json:"host"`
+	Records   DNSRecords  `json:"records"`
+	Addresses []IPAddress `json:"addresses"`
+	TLS       *TLSInfo    `json:"tls,omitempty"`
+	Warnings  []string    `json:"warnings,omitempty"`
 }
 
 type ASInfo struct {

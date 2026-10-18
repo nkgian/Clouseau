@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"clouseau/internal/analyzer"
 	"clouseau/internal/config"
@@ -11,10 +14,23 @@ import (
 )
 
 var configFile string
+var outputFile string
 
 // Define variables to hold the state of our flags
 var skipWhois bool
 var skipHTML bool
+
+type taskResult struct {
+	Task   string      `json:"task"`
+	Result interface{} `json:"result,omitempty"`
+	Error  string      `json:"error,omitempty"`
+}
+
+type outputReport struct {
+	Target      string       `json:"target"`
+	GeneratedAt time.Time    `json:"generated_at"`
+	Results     []taskResult `json:"results"`
+}
 
 var rootCmd = &cobra.Command{
 	Use:   "webanalyzer [url]",
@@ -37,6 +53,12 @@ var rootCmd = &cobra.Command{
 			"html_scan":    skipHTML,
 		}
 
+		report := outputReport{
+			Target:      url,
+			GeneratedAt: time.Now(),
+			Results:     []taskResult{},
+		}
+
 		for _, task := range cfg.Tasks {
 			// Check if the user passed a flag to skip this specific task
 			if skipMap[task.Name] {
@@ -53,13 +75,35 @@ var rootCmd = &cobra.Command{
 			result, err := analyzerInstance.Run(url, task.Params)
 			if err != nil {
 				fmt.Printf("[-] Error running %s: %v\n", task.Name, err)
+				report.Results = append(report.Results, taskResult{Task: task.Name, Error: err.Error()})
 				continue
 			}
+
 			fmt.Println(result)
+			report.Results = append(report.Results, taskResult{Task: task.Name, Result: result})
 		}
 
 		fmt.Println("---------------------------------------------------")
+
+		if outputFile != "" {
+			if err := writeReport(outputFile, report); err != nil {
+				fmt.Printf("[-] Error writing report: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("[+] Report written to %s\n", outputFile)
+		}
 	},
+}
+
+func writeReport(filename string, report outputReport) error {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(report); err != nil {
+		return err
+	}
+	return os.WriteFile(filename, buffer.Bytes(), 0o644)
 }
 
 func Execute() {
@@ -71,6 +115,9 @@ func Execute() {
 
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "config.yaml", "path to config file")
+
+	// Write the collected module results as a JSON report to this file.
+	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "write the analysis report as JSON to this file")
 
 	// Add the boolean flags for skipping specific modules.
 	// Format: variable pointer, "flag-name", shorthand (empty here), default value, "description"

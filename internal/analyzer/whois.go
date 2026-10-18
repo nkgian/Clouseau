@@ -12,10 +12,10 @@ import (
 type WhoisAnalyzer struct{}
 
 type WhoisResult struct {
-	Domain string
-	Server string
-	Fields map[string]string
-	Raw    string
+	Domain string            `json:"domain"`
+	Server string            `json:"server"`
+	Fields map[string]string `json:"fields"`
+	Raw    string            `json:"raw"`
 }
 
 func (r *WhoisResult) String() string {
