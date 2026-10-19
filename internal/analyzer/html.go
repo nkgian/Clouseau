@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"clouseau/internal/analyzer/submodules"
 )
 
 type HTMLAnalyzer struct{}
@@ -23,9 +25,10 @@ type HTMLPage struct {
 }
 
 type HTMLResult struct {
-	StartURL string     `json:"start_url"`
-	Pages    []HTMLPage `json:"pages"`
-	Links    []string   `json:"links,omitempty"`
+	StartURL  string                      `json:"start_url"`
+	Pages     []HTMLPage                  `json:"pages"`
+	Links     []string                    `json:"links,omitempty"`
+	WordPress *submodules.WordPressResult `json:"wordpress,omitempty"`
 }
 
 const (
@@ -58,6 +61,9 @@ func (r *HTMLResult) String() string {
 			fmt.Fprintf(&b, "    %s\n", link)
 		}
 	}
+	if r.WordPress != nil {
+		b.WriteString(r.WordPress.String())
+	}
 	return b.String()
 }
 
@@ -67,15 +73,16 @@ func (w *HTMLAnalyzer) Run(url string, params map[string]interface{}) (interface
 		maxDepth = 0
 	}
 	extractLinks := boolParam(params, "extract_links", true)
+	skipWordPress := boolParam(params, "skip_wordpress", false)
 
-	result, err := crawlHTML(url, maxDepth, extractLinks)
+	result, err := crawlHTML(url, maxDepth, extractLinks, !skipWordPress)
 	if err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
-func crawlHTML(start string, maxDepth int, extractLinks bool) (*HTMLResult, error) {
+func crawlHTML(start string, maxDepth int, extractLinks, wordpress bool) (*HTMLResult, error) {
 	base, err := url.Parse(normalizeURL(start))
 	if err != nil || base.Host == "" {
 		return nil, fmt.Errorf("invalid url %q", start)
@@ -100,6 +107,7 @@ func crawlHTML(start string, maxDepth int, extractLinks bool) (*HTMLResult, erro
 	visited := map[string]bool{}
 	seenLinks := map[string]bool{}
 	queue := []queueItem{{normalizeURL(start), 0}}
+	var wpDetection *submodules.WordPressDetection
 
 	for len(queue) > 0 && len(result.Pages) < maxHTMLPages {
 		current := queue[0]
@@ -109,12 +117,18 @@ func crawlHTML(start string, maxDepth int, extractLinks bool) (*HTMLResult, erro
 		}
 		visited[current.url] = true
 
-		page, links, err := fetchHTMLPage(client, current.url)
+		page, links, detection, err := fetchHTMLPage(client, current.url, wordpress)
 		if err != nil {
 			if current.depth == 0 {
 				return nil, err
 			}
 			continue
+		}
+		if detection != nil {
+			if wpDetection == nil {
+				wpDetection = &submodules.WordPressDetection{}
+			}
+			wpDetection.Merge(detection)
 		}
 		if extractLinks {
 			page.Links = links
@@ -148,25 +162,29 @@ func crawlHTML(start string, maxDepth int, extractLinks bool) (*HTMLResult, erro
 		sort.Strings(result.Links)
 	}
 
+	if wpDetection != nil {
+		result.WordPress = submodules.InspectWordPress(base.Scheme+"://"+base.Host, wpDetection)
+	}
+
 	return result, nil
 }
 
-func fetchHTMLPage(client *http.Client, pageURL string) (*HTMLPage, []string, error) {
+func fetchHTMLPage(client *http.Client, pageURL string, wordpress bool) (*HTMLPage, []string, *submodules.WordPressDetection, error) {
 	request, err := http.NewRequest(http.MethodGet, pageURL, nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	request.Header.Set("User-Agent", "clouseau/1.0")
 
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer response.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxHTMLBytes))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	page := &HTMLPage{
@@ -177,7 +195,12 @@ func fetchHTMLPage(client *http.Client, pageURL string) (*HTMLPage, []string, er
 	}
 
 	if !isHTMLContent(page.ContentType) {
-		return page, nil, nil
+		return page, nil, nil, nil
+	}
+
+	var detection *submodules.WordPressDetection
+	if wordpress {
+		detection = submodules.DetectWordPress(body)
 	}
 
 	if match := titlePattern.FindSubmatch(body); match != nil {
@@ -186,7 +209,7 @@ func fetchHTMLPage(client *http.Client, pageURL string) (*HTMLPage, []string, er
 
 	pageBase, err := url.Parse(page.URL)
 	if err != nil {
-		return page, nil, nil
+		return page, nil, detection, nil
 	}
 
 	seen := map[string]bool{}
@@ -220,7 +243,7 @@ func fetchHTMLPage(client *http.Client, pageURL string) (*HTMLPage, []string, er
 		links = append(links, link)
 	}
 
-	return page, links, nil
+	return page, links, detection, nil
 }
 
 func isHTMLContent(contentType string) bool {
