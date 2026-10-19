@@ -170,11 +170,22 @@ Clusters related infrastructure:
 
 ### `ip_lookup`
 
-Resolves A/AAAA/CNAME/NS/MX/TXT records, PTR and forward-confirmed PTR, ASN and
-prefix (Team Cymru), provider/CDN fingerprints, and email security records
-(SPF, DMARC, BIMI).
+Maps the target to its DNS and network footprint:
 
-Optional extras, all disabled by default:
+- **DNS records** — A/AAAA (IPv4/IPv6 addresses), CNAME (alias), NS
+  (nameservers), MX (mail servers), and TXT
+- **Reverse DNS** — the PTR name for each address, marked forward-confirmed
+  when that name resolves back to the same IP
+- **Network ownership** — ASN, announced prefix, country, and network name
+  (Team Cymru)
+- **Provider detection** — matches CNAME/PTR/ASN names against known CDNs and
+  hosting providers (Cloudflare, Akamai, Fastly, CloudFront, ...)
+- **Email security** — SPF (from TXT), DMARC and its policy (from
+  `_dmarc.<domain>`), and BIMI (from `default._bimi.<domain>`), falling back
+  to the parent domain for `www`/`m`-style hosts
+
+Optional extras, off unless enabled in the task params (the shipped
+`config.yaml` turns all of them on):
 
 | Param | Description |
 | --- | --- |
