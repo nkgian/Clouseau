@@ -10,6 +10,12 @@ tasks:
 
   - name: "headers_scan"
 
+  - name: "domain_scan"
+
+  - name: "threat_lookup"
+
+  - name: "infra_scan"
+
   - name: "ip_lookup"
     params:
       tls: true

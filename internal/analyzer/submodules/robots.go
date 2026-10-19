@@ -3,6 +3,7 @@ package submodules
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -13,18 +14,32 @@ type RobotsGroup struct {
 	CrawlDelay string   `json:"crawl_delay,omitempty"`
 }
 
-type RobotsResult struct {
-	URL       string        `json:"url"`
-	Status    int           `json:"status"`
-	Groups    []RobotsGroup `json:"groups,omitempty"`
-	Sitemaps  []string      `json:"sitemaps,omitempty"`
-	Sensitive []string      `json:"sensitive,omitempty"`
+type SitemapSummary struct {
+	URL    string `json:"url"`
+	Status int    `json:"status,omitempty"`
+	URLs   int    `json:"urls,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
-var robotsSensitivePatterns = []string{
-	"admin", "login", "backup", "config", "private", "secret", "internal",
-	"staging", "tmp", "sql", "db", ".git", ".env", "password", "phpmyadmin",
+type RobotsResult struct {
+	URL          string           `json:"url"`
+	Status       int              `json:"status"`
+	Groups       []RobotsGroup    `json:"groups,omitempty"`
+	Sitemaps     []string         `json:"sitemaps,omitempty"`
+	SitemapFiles []SitemapSummary `json:"sitemap_files,omitempty"`
+	TotalURLs    int              `json:"total_urls,omitempty"`
+	Sensitive    []string         `json:"sensitive,omitempty"`
 }
+
+const sitemapsMax = 5
+
+var (
+	robotsSensitivePatterns = []string{
+		"admin", "login", "backup", "config", "private", "secret", "internal",
+		"staging", "tmp", "sql", "db", ".git", ".env", "password", "phpmyadmin",
+	}
+	sitemapLocPattern = regexp.MustCompile(`(?i)<loc>\s*([^<\s]+)\s*</loc>`)
+)
 
 func (r *RobotsResult) String() string {
 	var b strings.Builder
@@ -44,6 +59,16 @@ func (r *RobotsResult) String() string {
 		fmt.Fprintf(&b, "  sitemaps: %d\n", len(r.Sitemaps))
 		for _, sitemap := range r.Sitemaps {
 			fmt.Fprintf(&b, "    %s\n", sitemap)
+		}
+	}
+	if len(r.SitemapFiles) > 0 {
+		fmt.Fprintf(&b, "  sitemaps fetched: %d (%d URLs)\n", len(r.SitemapFiles), r.TotalURLs)
+		for _, file := range r.SitemapFiles {
+			if file.Error != "" {
+				fmt.Fprintf(&b, "    %s: error (%s)\n", file.URL, file.Error)
+				continue
+			}
+			fmt.Fprintf(&b, "    %s: status %d, %d URLs\n", file.URL, file.Status, file.URLs)
 		}
 	}
 	if len(r.Sensitive) > 0 {
@@ -74,7 +99,35 @@ func FetchRobots(baseURL string) *RobotsResult {
 	result.Groups = parsed.Groups
 	result.Sitemaps = parsed.Sitemaps
 	result.Sensitive = parsed.Sensitive
+	result.SitemapFiles, result.TotalURLs = inspectSitemaps(client, parsed.Sitemaps)
 	return result
+}
+
+func inspectSitemaps(client *http.Client, sitemaps []string) ([]SitemapSummary, int) {
+	var files []SitemapSummary
+	total := 0
+
+	for _, sitemapURL := range sitemaps {
+		if len(files) >= sitemapsMax {
+			break
+		}
+
+		summary := SitemapSummary{URL: sitemapURL}
+		status, body, _, err := httpGet(client, sitemapURL)
+		if err != nil {
+			summary.Error = err.Error()
+			files = append(files, summary)
+			continue
+		}
+		summary.Status = status
+		if status == http.StatusOK {
+			summary.URLs = len(sitemapLocPattern.FindAll(body, -1))
+			total += summary.URLs
+		}
+		files = append(files, summary)
+	}
+
+	return files, total
 }
 
 func ParseRobots(content string) *RobotsResult {

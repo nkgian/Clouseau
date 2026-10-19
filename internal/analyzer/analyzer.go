@@ -10,11 +10,14 @@ type Analyzer interface {
 }
 
 var Registry = map[string]Analyzer{
-	"ip_lookup":    &IpLookup{},
-	"whois_lookup": &WhoisAnalyzer{},
-	"html_scan":    &HTMLAnalyzer{},
-	"robots_scan":  &RobotsAnalyzer{},
-	"headers_scan": &HeadersAnalyzer{},
+	"ip_lookup":     &IpLookup{},
+	"whois_lookup":  &WhoisAnalyzer{},
+	"html_scan":     &HTMLAnalyzer{},
+	"robots_scan":   &RobotsAnalyzer{},
+	"headers_scan":  &HeadersAnalyzer{},
+	"domain_scan":   &DomainAnalyzer{},
+	"threat_lookup": &ThreatAnalyzer{},
+	"infra_scan":    &InfraAnalyzer{},
 }
 
 func normalizeURL(raw string) string {
@@ -27,7 +30,7 @@ func normalizeURL(raw string) string {
 func hostFromURL(raw string) string {
 	parsed, err := url.Parse(normalizeURL(raw))
 	if err != nil || parsed.Hostname() == "" {
-		return strings.ToLower(raw)
+		return ""
 	}
 	return strings.ToLower(parsed.Hostname())
 }

@@ -7,8 +7,8 @@ import (
 )
 
 type Task struct {
-	Name    string                 `yaml:"name"`
-	Params  map[string]interface{} `yaml:"params"`
+	Name   string                 `yaml:"name"`
+	Params map[string]interface{} `yaml:"params"`
 }
 
 type Config struct {

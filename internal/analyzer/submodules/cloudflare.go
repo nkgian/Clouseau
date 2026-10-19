@@ -2,7 +2,6 @@ package submodules
 
 import (
 	"fmt"
-	"net"
 	"os"
 	"sort"
 	"strings"
@@ -22,6 +21,8 @@ type OriginResult struct {
 
 type Classifier func(ips []string) (map[string]bool, error)
 
+type Resolver func(host string) ([]string, error)
+
 func (r *OriginResult) String() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[cloudflare_ip_lookup] %s (%d subdomains resolved)\n", r.Domain, r.Checked)
@@ -38,7 +39,7 @@ func (r *OriginResult) String() string {
 	return b.String()
 }
 
-func LookupOrigins(host string, params map[string]interface{}, isCloudflare Classifier) (*OriginResult, error) {
+func LookupOrigins(host string, params map[string]interface{}, isCloudflare Classifier, resolve Resolver) (*OriginResult, error) {
 	domain := BaseDomain(host)
 	names, err := subdomains(params)
 	if err != nil {
@@ -64,7 +65,7 @@ func LookupOrigins(host string, params map[string]interface{}, isCloudflare Clas
 			defer func() { <-semaphore }()
 
 			fqdn := name + "." + domain
-			ips, err := net.LookupHost(fqdn)
+			ips, err := resolve(fqdn)
 			if err != nil || len(ips) == 0 {
 				return
 			}

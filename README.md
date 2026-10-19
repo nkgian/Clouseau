@@ -33,6 +33,9 @@ clouseau [url] [flags]
 | `--skip-html` | Skip the `html_scan` module |
 | `--skip-robots` | Skip the `robots_scan` module |
 | `--skip-headers` | Skip the `headers_scan` module |
+| `--skip-domain` | Skip the `domain_scan` module |
+| `--skip-threat` | Skip the `threat_lookup` module |
+| `--skip-infra` | Skip the `infra_scan` module |
 
 Modules are driven by the config file; removing a task from it disables that
 module (`ip_lookup` has no skip flag).
@@ -49,10 +52,20 @@ tasks:
       max_depth: 3
       extract_links: true
       # skip_wordpress: true
+      # skip_cloaking: true
+      # evidence_dir: "./evidence"
 
   - name: "robots_scan"
 
   - name: "headers_scan"
+
+  - name: "domain_scan"
+
+  - name: "threat_lookup"
+    params:
+      # urlhaus_key: "..."   # optional, for higher rate limits
+
+  - name: "infra_scan"
 
   - name: "ip_lookup"
     params:
@@ -69,34 +82,50 @@ tasks:
 
 Queries WHOIS over TCP/43. Without a `server` param it discovers the
 authoritative server through IANA. The result includes the parsed field map
-plus the raw response.
+plus the raw response. When the creation date is parseable the result also
+includes `domain_age_days` and flags domains registered less than 90 days ago
+as `new_domain`.
 
 ### `html_scan`
 
-Crawls the target (same host only) and reports status, title, size, and links
-per page.
+Crawls the target (same host only) and reports status, title, size, SHA-256,
+and links per page. Every page body gets a SHA-256 digest; with `evidence_dir`
+set, the raw bodies are also saved to disk (chain of custody for
+investigations).
 
 - `max_depth` — crawl depth (default `1`, `0` fetches only the start page)
 - `extract_links` — collect and print unique links (default `true`)
 - `skip_wordpress` — disable the WordPress submodule (default `false`)
+- `skip_cloaking` — disable the cloaking check (default `false`)
+- `evidence_dir` — save fetched page bodies into this directory
 
-The WordPress submodule fingerprints the site from the HTML
-(`/wp-content/`, `/wp-admin/`, `/wp-json/`, `xmlrpc.php`, generator meta tag,
-plugin/theme asset paths) and, when detected, probes public endpoints:
+Submodules:
 
-- version via meta generator, `readme.html`, or the RSS feed
-- `/wp-login.php`, `/xmlrpc.php`, `/wp-sitemap.xml`
-- REST API index (site name and namespaces, which reveal plugins)
-- user enumeration via `/wp-json/wp/v2/users`
-- author slugs via `/?author=1..3` redirects
+- **Identifiers** — extracts analytics/tracker IDs (Google Analytics, GTM,
+  AdSense, Facebook Pixel, Yandex Metrica), Telegram and WhatsApp contacts,
+  crypto wallet addresses, and email addresses. Reused IDs and wallets are a
+  strong clustering signal for phishing kits and disinformation networks.
+- **Forms** — password forms, cross-origin form `action` targets, hidden
+  field counts, and `<meta http-equiv="refresh">` redirects.
+- **Cloaking** — fetches the start URL with browser, Googlebot, and curl
+  profiles and compares status, final URL, title, and body size; differences
+  are reported as suspected cloaking.
+- **WordPress** — fingerprints the site from the HTML (`/wp-content/`,
+  `/wp-admin/`, `/wp-json/`, `xmlrpc.php`, generator meta tag, plugin/theme
+  asset paths) and, when detected, probes public endpoints:
 
-Results appear under `wordpress` in the report.
+  - version via meta generator, `readme.html`, or the RSS feed
+  - `/wp-login.php`, `/xmlrpc.php`, `/wp-sitemap.xml`
+  - REST API index (site name and namespaces, which reveal plugins)
+  - user enumeration via `/wp-json/wp/v2/users`
+  - author slugs via `/?author=1..3` redirects
 
 ### `robots_scan`
 
 Fetches `/robots.txt` and reports the status, groups (with allowed/disallowed
 counts), sitemaps, and disallowed paths that look sensitive (`admin`,
-`backup`, `.env`, `staging`, ...).
+`backup`, `.env`, `staging`, ...). Up to 5 listed sitemaps are fetched and the
+total number of URLs is reported.
 
 ### `headers_scan`
 
@@ -107,6 +136,37 @@ Fetches the target once and audits the response headers:
 - `Set-Cookie` flags (`Secure`, `HttpOnly`, `SameSite`)
 - CORS behavior, probing with a foreign `Origin` to detect reflection
 - server banner and `X-Powered-By`
+- the full redirect chain (status and URL per hop)
+
+### `domain_scan`
+
+Inspects the hostname itself for phishing signals:
+
+- punycode (`xn--`) internationalized domains, decoded to their Unicode form
+- mixed-script hosts (e.g. Cyrillic characters inside a Latin name), which
+  indicate possible homoglyph domains
+
+### `threat_lookup`
+
+Checks the host against free, keyless threat intelligence sources:
+
+- **OpenPhish** community feed — reports matching phishing URLs
+- **URLhaus** host API — reports listed malware/phishing URLs
+- **Wayback Machine** CDX API — reports the first archived capture, i.e. how
+  long the site has existed
+
+`urlhaus_key` supplies an optional API key for higher rate limits. The
+`openphish_url`, `urlhaus_url`, and `wayback_url` params override the default
+endpoints (mainly useful for testing).
+
+### `infra_scan`
+
+Clusters related infrastructure:
+
+- **Certificate Transparency** (crt.sh) — sibling domains sharing a
+  certificate with the target (capped at 100)
+- **Favicon** — SHA-256 and Shodan-compatible mmh3 hash of `/favicon.ico` for
+  pivoting on Shodan
 
 ### `ip_lookup`
 
@@ -223,8 +283,8 @@ go test ./...
 
 ```
 cmd/                          CLI entry point and flags
-internal/analyzer/            modules: whois, html, robots, headers, ip
-internal/analyzer/submodules/ provider/stack submodules (cloudflare, wordpress, robots)
+internal/analyzer/            modules: whois, html, robots, headers, domain, threat, infra, ip
+internal/analyzer/submodules/ shared submodules (cloudflare, wordpress, robots, identifiers, forms, cloak, favicon)
 internal/config/              YAML config loading
 tests/                        external package tests
 ```

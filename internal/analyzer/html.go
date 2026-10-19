@@ -1,10 +1,13 @@
 package analyzer
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -16,19 +19,34 @@ import (
 type HTMLAnalyzer struct{}
 
 type HTMLPage struct {
-	URL         string   `json:"url"`
-	Status      int      `json:"status"`
-	Title       string   `json:"title,omitempty"`
-	ContentType string   `json:"content_type,omitempty"`
-	Bytes       int      `json:"bytes"`
-	Links       []string `json:"links,omitempty"`
+	URL          string   `json:"url"`
+	Status       int      `json:"status"`
+	Title        string   `json:"title,omitempty"`
+	ContentType  string   `json:"content_type,omitempty"`
+	Bytes        int      `json:"bytes"`
+	SHA256       string   `json:"sha256,omitempty"`
+	EvidenceFile string   `json:"evidence_file,omitempty"`
+	Links        []string `json:"links,omitempty"`
 }
 
 type HTMLResult struct {
-	StartURL  string                      `json:"start_url"`
-	Pages     []HTMLPage                  `json:"pages"`
-	Links     []string                    `json:"links,omitempty"`
-	WordPress *submodules.WordPressResult `json:"wordpress,omitempty"`
+	StartURL       string                       `json:"start_url"`
+	Pages          []HTMLPage                   `json:"pages"`
+	Links          []string                     `json:"links,omitempty"`
+	Cloaking       *submodules.CloakingResult   `json:"cloaking,omitempty"`
+	Forms          *submodules.FormResult       `json:"forms,omitempty"`
+	Identifiers    *submodules.IdentifierResult `json:"identifiers,omitempty"`
+	WordPress      *submodules.WordPressResult  `json:"wordpress,omitempty"`
+	EvidenceDir    string                       `json:"evidence_dir,omitempty"`
+	EvidenceErrors []string                     `json:"evidence_errors,omitempty"`
+}
+
+type htmlOptions struct {
+	maxDepth     int
+	extractLinks bool
+	wordpress    bool
+	cloaking     bool
+	evidenceDir  string
 }
 
 const (
@@ -61,28 +79,53 @@ func (r *HTMLResult) String() string {
 			fmt.Fprintf(&b, "    %s\n", link)
 		}
 	}
+	if r.Cloaking != nil {
+		b.WriteString(r.Cloaking.String())
+	}
+	if r.Forms != nil {
+		b.WriteString(r.Forms.String())
+	}
+	if r.Identifiers != nil {
+		b.WriteString(r.Identifiers.String())
+	}
 	if r.WordPress != nil {
 		b.WriteString(r.WordPress.String())
+	}
+	for _, err := range r.EvidenceErrors {
+		fmt.Fprintf(&b, "  ! evidence: %s\n", err)
+	}
+	if r.EvidenceDir != "" {
+		saved := 0
+		for _, page := range r.Pages {
+			if page.EvidenceFile != "" {
+				saved++
+			}
+		}
+		fmt.Fprintf(&b, "  evidence: %d page(s) saved to %s\n", saved, r.EvidenceDir)
 	}
 	return b.String()
 }
 
 func (w *HTMLAnalyzer) Run(url string, params map[string]interface{}) (interface{}, error) {
-	maxDepth := intParam(params, "max_depth", 1)
-	if maxDepth < 0 {
-		maxDepth = 0
+	options := htmlOptions{
+		maxDepth:     intParam(params, "max_depth", 1),
+		extractLinks: boolParam(params, "extract_links", true),
+		wordpress:    !boolParam(params, "skip_wordpress", false),
+		cloaking:     !boolParam(params, "skip_cloaking", false),
+		evidenceDir:  stringParam(params, "evidence_dir"),
 	}
-	extractLinks := boolParam(params, "extract_links", true)
-	skipWordPress := boolParam(params, "skip_wordpress", false)
+	if options.maxDepth < 0 {
+		options.maxDepth = 0
+	}
 
-	result, err := crawlHTML(url, maxDepth, extractLinks, !skipWordPress)
+	result, err := crawlHTML(url, options)
 	if err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
-func crawlHTML(start string, maxDepth int, extractLinks, wordpress bool) (*HTMLResult, error) {
+func crawlHTML(start string, options htmlOptions) (*HTMLResult, error) {
 	base, err := url.Parse(normalizeURL(start))
 	if err != nil || base.Host == "" {
 		return nil, fmt.Errorf("invalid url %q", start)
@@ -107,7 +150,19 @@ func crawlHTML(start string, maxDepth int, extractLinks, wordpress bool) (*HTMLR
 	visited := map[string]bool{}
 	seenLinks := map[string]bool{}
 	queue := []queueItem{{normalizeURL(start), 0}}
-	var wpDetection *submodules.WordPressDetection
+	var (
+		wpDetection *submodules.WordPressDetection
+		identifiers *submodules.IdentifierResult
+		forms       *submodules.FormResult
+	)
+
+	stamp := time.Now().Format("20060102-150405")
+	if options.evidenceDir != "" {
+		if err := os.MkdirAll(options.evidenceDir, 0o755); err != nil {
+			return nil, fmt.Errorf("cannot create evidence directory: %w", err)
+		}
+		result.EvidenceDir = options.evidenceDir
+	}
 
 	for len(queue) > 0 && len(result.Pages) < maxHTMLPages {
 		current := queue[0]
@@ -117,32 +172,57 @@ func crawlHTML(start string, maxDepth int, extractLinks, wordpress bool) (*HTMLR
 		}
 		visited[current.url] = true
 
-		page, links, detection, err := fetchHTMLPage(client, current.url, wordpress)
+		fetch, err := fetchHTMLPage(client, current.url, options.wordpress)
 		if err != nil {
 			if current.depth == 0 {
 				return nil, err
 			}
 			continue
 		}
-		if detection != nil {
+		if fetch.wordpress != nil {
 			if wpDetection == nil {
 				wpDetection = &submodules.WordPressDetection{}
 			}
-			wpDetection.Merge(detection)
+			wpDetection.Merge(fetch.wordpress)
 		}
-		if extractLinks {
-			page.Links = links
+		if fetch.identifiers != nil {
+			if identifiers == nil {
+				identifiers = &submodules.IdentifierResult{}
+			}
+			identifiers.Merge(fetch.identifiers)
+		}
+		if fetch.forms != nil {
+			if forms == nil {
+				forms = &submodules.FormResult{}
+			}
+			forms.Merge(fetch.forms)
+		}
+
+		page := fetch.page
+		if options.extractLinks {
+			page.Links = fetch.links
 		}
 		result.Pages = append(result.Pages, *page)
 
-		for _, link := range links {
+		if options.evidenceDir != "" {
+			index := len(result.Pages) - 1
+			name := fmt.Sprintf("%s-page-%03d.html", stamp, index+1)
+			path := filepath.Join(options.evidenceDir, name)
+			if err := os.WriteFile(path, fetch.body, 0o644); err != nil {
+				result.EvidenceErrors = append(result.EvidenceErrors, err.Error())
+			} else {
+				result.Pages[index].EvidenceFile = path
+			}
+		}
+
+		for _, link := range fetch.links {
 			seenLinks[link] = true
 		}
 
-		if current.depth >= maxDepth {
+		if current.depth >= options.maxDepth {
 			continue
 		}
-		for _, link := range links {
+		for _, link := range fetch.links {
 			if visited[link] {
 				continue
 			}
@@ -154,7 +234,7 @@ func crawlHTML(start string, maxDepth int, extractLinks, wordpress bool) (*HTMLR
 		}
 	}
 
-	if extractLinks {
+	if options.extractLinks {
 		result.Links = make([]string, 0, len(seenLinks))
 		for link := range seenLinks {
 			result.Links = append(result.Links, link)
@@ -162,58 +242,80 @@ func crawlHTML(start string, maxDepth int, extractLinks, wordpress bool) (*HTMLR
 		sort.Strings(result.Links)
 	}
 
+	if identifiers != nil {
+		result.Identifiers = identifiers
+	}
+	if forms != nil {
+		result.Forms = forms
+	}
 	if wpDetection != nil {
 		result.WordPress = submodules.InspectWordPress(base.Scheme+"://"+base.Host, wpDetection)
+	}
+	if options.cloaking {
+		result.Cloaking = submodules.DetectCloaking(normalizeURL(start))
 	}
 
 	return result, nil
 }
 
-func fetchHTMLPage(client *http.Client, pageURL string, wordpress bool) (*HTMLPage, []string, *submodules.WordPressDetection, error) {
+type pageFetch struct {
+	page        *HTMLPage
+	links       []string
+	body        []byte
+	wordpress   *submodules.WordPressDetection
+	identifiers *submodules.IdentifierResult
+	forms       *submodules.FormResult
+}
+
+func fetchHTMLPage(client *http.Client, pageURL string, wordpress bool) (*pageFetch, error) {
 	request, err := http.NewRequest(http.MethodGet, pageURL, nil)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	request.Header.Set("User-Agent", "clouseau/1.0")
 
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	defer response.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxHTMLBytes))
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
-	page := &HTMLPage{
-		URL:         response.Request.URL.String(),
-		Status:      response.StatusCode,
-		ContentType: response.Header.Get("Content-Type"),
-		Bytes:       len(body),
+	fetch := &pageFetch{
+		page: &HTMLPage{
+			URL:         response.Request.URL.String(),
+			Status:      response.StatusCode,
+			ContentType: response.Header.Get("Content-Type"),
+			Bytes:       len(body),
+			SHA256:      fmt.Sprintf("%x", sha256.Sum256(body)),
+		},
+		body: body,
 	}
 
-	if !isHTMLContent(page.ContentType) {
-		return page, nil, nil, nil
+	if !isHTMLContent(fetch.page.ContentType) {
+		return fetch, nil
 	}
 
-	var detection *submodules.WordPressDetection
 	if wordpress {
-		detection = submodules.DetectWordPress(body)
+		fetch.wordpress = submodules.DetectWordPress(body)
 	}
+	fetch.identifiers = submodules.DetectIdentifiers(body)
+	fetch.forms = submodules.ParseForms(body, fetch.page.URL)
 
 	if match := titlePattern.FindSubmatch(body); match != nil {
-		page.Title = truncate(strings.Join(strings.Fields(string(match[1])), " "), maxHTMLTitle)
+		fetch.page.Title = truncate(strings.Join(strings.Fields(string(match[1])), " "), maxHTMLTitle)
 	}
 
-	pageBase, err := url.Parse(page.URL)
+	pageBase, err := url.Parse(fetch.page.URL)
 	if err != nil {
-		return page, nil, detection, nil
+		return fetch, nil
 	}
 
 	seen := map[string]bool{}
-	var links []string
 	for _, match := range linkPattern.FindAllSubmatch(body, -1) {
 		rawReference := ""
 		for _, group := range match[1:] {
@@ -240,10 +342,10 @@ func fetchHTMLPage(client *http.Client, pageURL string, wordpress bool) (*HTMLPa
 			continue
 		}
 		seen[link] = true
-		links = append(links, link)
+		fetch.links = append(fetch.links, link)
 	}
 
-	return page, links, detection, nil
+	return fetch, nil
 }
 
 func isHTMLContent(contentType string) bool {

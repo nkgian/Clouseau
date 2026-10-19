@@ -32,11 +32,17 @@ type CORSInfo struct {
 	ReflectsOrigin   bool   `json:"reflects_origin"`
 }
 
+type RedirectHop struct {
+	URL    string `json:"url"`
+	Status int    `json:"status,omitempty"`
+}
+
 type HeadersResult struct {
 	URL       string        `json:"url"`
 	Status    int           `json:"status"`
 	Server    string        `json:"server,omitempty"`
 	PoweredBy string        `json:"powered_by,omitempty"`
+	Redirects []RedirectHop `json:"redirects,omitempty"`
 	Checks    []HeaderCheck `json:"checks"`
 	Cookies   []CookieFlag  `json:"cookies,omitempty"`
 	CORS      *CORSInfo     `json:"cors,omitempty"`
@@ -48,6 +54,7 @@ const (
 	headerStatusMissing = "missing"
 	corsProbeOrigin     = "https://clouseau.example"
 	hstsMinMaxAge       = 15552000
+	headerRedirectLimit = 10
 )
 
 var hstsMaxAgePattern = regexp.MustCompile(`(?i)max-age\s*=\s*(\d+)`)
@@ -65,18 +72,34 @@ func (h *HeadersAnalyzer) Run(target string, params map[string]interface{}) (int
 	request.Header.Set("User-Agent", "clouseau/1.0")
 	request.Header.Set("Origin", corsProbeOrigin)
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	hops := []RedirectHop{{URL: parsed.String()}}
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= headerRedirectLimit {
+				return fmt.Errorf("stopped after %d redirects", headerRedirectLimit)
+			}
+			hops[len(hops)-1].Status = req.Response.StatusCode
+			hops = append(hops, RedirectHop{URL: req.URL.String()})
+			return nil
+		},
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, err
 	}
 	defer response.Body.Close()
 
+	hops[len(hops)-1].Status = response.StatusCode
+
 	result := &HeadersResult{
 		URL:       response.Request.URL.String(),
 		Status:    response.StatusCode,
 		Server:    response.Header.Get("Server"),
 		PoweredBy: response.Header.Get("X-Powered-By"),
+	}
+	if len(hops) > 1 {
+		result.Redirects = hops
 	}
 
 	hsts := response.Header.Get("Strict-Transport-Security")
@@ -117,6 +140,13 @@ func (r *HeadersResult) String() string {
 	}
 	if r.PoweredBy != "" {
 		fmt.Fprintf(&b, "  powered by: %s\n", r.PoweredBy)
+	}
+
+	if len(r.Redirects) > 1 {
+		fmt.Fprintf(&b, "  redirects: %d hop(s)\n", len(r.Redirects)-1)
+		for _, hop := range r.Redirects {
+			fmt.Fprintf(&b, "    %d %s\n", hop.Status, hop.URL)
+		}
 	}
 
 	if len(r.Checks) > 0 {

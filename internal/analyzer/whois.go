@@ -12,15 +12,45 @@ import (
 type WhoisAnalyzer struct{}
 
 type WhoisResult struct {
-	Domain string            `json:"domain"`
-	Server string            `json:"server"`
-	Fields map[string]string `json:"fields"`
-	Raw    string            `json:"raw"`
+	Domain    string            `json:"domain"`
+	Server    string            `json:"server"`
+	CreatedAt string            `json:"created_at,omitempty"`
+	AgeDays   int               `json:"domain_age_days,omitempty"`
+	NewDomain bool              `json:"new_domain,omitempty"`
+	Fields    map[string]string `json:"fields"`
+	Raw       string            `json:"raw"`
 }
+
+const newDomainDays = 90
+
+var (
+	whoisCreatedKeys = []string{
+		"Creation Date", "Created On", "Created", "created", "created_at",
+		"Creation Time", "Registered On", "Registration Date",
+		"Domain Registration Date", "created date", "Created Date",
+	}
+	whoisDateLayouts = []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05Z",
+		"2006-01-02T15:04:05.000Z",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+		"02-Jan-2006",
+		"2006.01.02",
+		"January 2 2006",
+	}
+)
 
 func (r *WhoisResult) String() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[whois_lookup] %s (server: %s)\n", r.Domain, r.Server)
+
+	if r.AgeDays > 0 {
+		fmt.Fprintf(&b, "  domain age: %d days\n", r.AgeDays)
+	}
+	if r.NewDomain {
+		fmt.Fprintf(&b, "  ! recently registered domain (< %d days)\n", newDomainDays)
+	}
 
 	keys := make([]string, 0, len(r.Fields))
 	for k := range r.Fields {
@@ -40,6 +70,9 @@ func (r *WhoisResult) String() string {
 
 func (w *WhoisAnalyzer) Run(url string, params map[string]interface{}) (interface{}, error) {
 	domain := hostFromURL(url)
+	if domain == "" {
+		return nil, fmt.Errorf("invalid url %q", url)
+	}
 
 	server := stringParam(params, "server")
 	if server == "" {
@@ -55,12 +88,37 @@ func (w *WhoisAnalyzer) Run(url string, params map[string]interface{}) (interfac
 		return nil, fmt.Errorf("whois query to %s for %s failed: %w", server, domain, err)
 	}
 
-	return &WhoisResult{
+	fields := parseWhoisFields(raw)
+	result := &WhoisResult{
 		Domain: domain,
 		Server: server,
-		Fields: parseWhoisFields(raw),
+		Fields: fields,
 		Raw:    raw,
-	}, nil
+	}
+	if created, ok := whoisCreatedAt(fields); ok {
+		result.CreatedAt = created.Format("2006-01-02")
+		if days := int(time.Since(created).Hours() / 24); days >= 0 {
+			result.AgeDays = days
+			result.NewDomain = days < newDomainDays
+		}
+	}
+	return result, nil
+}
+
+func whoisCreatedAt(fields map[string]string) (time.Time, bool) {
+	for _, key := range whoisCreatedKeys {
+		value, exists := fields[key]
+		if !exists {
+			continue
+		}
+		value = strings.TrimSpace(strings.Trim(value, "\"'"))
+		for _, layout := range whoisDateLayouts {
+			if parsed, err := time.Parse(layout, value); err == nil {
+				return parsed, true
+			}
+		}
+	}
+	return time.Time{}, false
 }
 
 func queryWhois(server, query string) (string, error) {

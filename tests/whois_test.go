@@ -172,6 +172,44 @@ func TestWhoisRunIgnoresDatabaseMarkerLines(t *testing.T) {
 	}
 }
 
+func TestWhoisRunComputesDomainAge(t *testing.T) {
+	response := strings.Join([]string{
+		"Domain Name: EXAMPLE.COM",
+		"Creation Date: 1995-08-14T04:00:00Z",
+	}, "\r\n") + "\r\n"
+
+	server, _ := startFakeWhoisServer(t, response)
+	whois := runWhois(t, "example.com", server)
+
+	if whois.CreatedAt != "1995-08-14" {
+		t.Fatalf("CreatedAt = %q, want 1995-08-14", whois.CreatedAt)
+	}
+	if whois.AgeDays < 10000 {
+		t.Fatalf("AgeDays = %d, want at least 10000", whois.AgeDays)
+	}
+	if whois.NewDomain {
+		t.Fatal("NewDomain = true, want false for a 1995 domain")
+	}
+}
+
+func TestWhoisRunFlagsNewDomain(t *testing.T) {
+	created := time.Now().UTC().AddDate(0, 0, -10).Format(time.RFC3339)
+	response := strings.Join([]string{
+		"Domain Name: NEW.EXAMPLE",
+		"Creation Date: " + created,
+	}, "\r\n") + "\r\n"
+
+	server, _ := startFakeWhoisServer(t, response)
+	whois := runWhois(t, "new.example", server)
+
+	if !whois.NewDomain {
+		t.Fatalf("NewDomain = false, want true for a domain created 10 days ago (age %d)", whois.AgeDays)
+	}
+	if whois.AgeDays > 15 {
+		t.Fatalf("AgeDays = %d, want around 10", whois.AgeDays)
+	}
+}
+
 func TestWhoisRunErrorsWhenServerUnreachable(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

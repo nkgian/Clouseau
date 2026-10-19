@@ -144,6 +144,63 @@ func TestFetchRobotsUnreachable(t *testing.T) {
 	}
 }
 
+func TestFetchRobotsInventoriesSitemaps(t *testing.T) {
+	var serverURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "User-agent: *\nDisallow: /\nSitemap: %s/sitemap.xml\n", serverURL)
+	})
+	mux.HandleFunc("/sitemap.xml", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<urlset>
+<url><loc>https://example.com/a</loc></url>
+<url><loc>https://example.com/b</loc></url>
+<url><loc>https://example.com/c</loc></url>
+</urlset>`)
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	serverURL = server.URL
+
+	result := submodules.FetchRobots(server.URL)
+	if result == nil {
+		t.Fatal("expected robots result, got nil")
+	}
+	if len(result.SitemapFiles) != 1 {
+		t.Fatalf("sitemap files = %+v, want 1 entry", result.SitemapFiles)
+	}
+	if result.TotalURLs != 3 {
+		t.Fatalf("total urls = %d, want 3", result.TotalURLs)
+	}
+	file := result.SitemapFiles[0]
+	if file.Status != http.StatusOK || file.URLs != 3 {
+		t.Fatalf("sitemap file = %+v, want status 200 with 3 urls", file)
+	}
+}
+
+func TestFetchRobotsRecordsSitemapErrors(t *testing.T) {
+	var serverURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "User-agent: *\nSitemap: %s/missing.xml\n", serverURL)
+	})
+	mux.HandleFunc("/missing.xml", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	serverURL = server.URL
+
+	result := submodules.FetchRobots(server.URL)
+	if len(result.SitemapFiles) != 1 {
+		t.Fatalf("sitemap files = %+v, want 1 entry", result.SitemapFiles)
+	}
+	if result.SitemapFiles[0].Status != http.StatusNotFound || result.TotalURLs != 0 {
+		t.Fatalf("sitemap file = %+v, want 404 with no urls", result.SitemapFiles[0])
+	}
+}
+
 func TestRobotsAnalyzerRun(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "User-agent: *\nDisallow: /admin/\n")

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"clouseau/internal/analyzer"
@@ -145,6 +146,41 @@ func TestHeadersRunFlagsWeakValues(t *testing.T) {
 	}
 	if headers.CORS != nil {
 		t.Fatalf("cors = %+v, want nil", headers.CORS)
+	}
+}
+
+func TestHeadersRunFollowsRedirectChain(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/a", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/b", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("/b", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/c", http.StatusFound)
+	})
+	mux.HandleFunc("/c", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "<html></html>")
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	result, err := (&analyzer.HeadersAnalyzer{}).Run(server.URL+"/a", nil)
+	if err != nil {
+		t.Fatalf("Run returned unexpected error: %v", err)
+	}
+	headers := result.(*analyzer.HeadersResult)
+
+	if len(headers.Redirects) != 3 {
+		t.Fatalf("redirects = %+v, want 3 hops", headers.Redirects)
+	}
+	wantStatuses := []int{http.StatusMovedPermanently, http.StatusFound, http.StatusOK}
+	for i, hop := range headers.Redirects {
+		if hop.Status != wantStatuses[i] {
+			t.Fatalf("hop %d = %+v, want status %d", i, hop, wantStatuses[i])
+		}
+	}
+	if !strings.HasSuffix(headers.Redirects[2].URL, "/c") {
+		t.Fatalf("final hop = %+v, want url ending in /c", headers.Redirects[2])
 	}
 }
 

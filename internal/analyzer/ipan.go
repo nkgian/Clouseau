@@ -389,7 +389,7 @@ func (w *IpLookup) Run(url string, params map[string]interface{}) (interface{}, 
 	}
 
 	if !boolParam(params, "skip_origin_lookup", false) && net.ParseIP(host) == nil && hasProvider(addresses, "Cloudflare") {
-		origin, err := submodules.LookupOrigins(host, params, classifyCloudflareIPs)
+		origin, err := submodules.LookupOrigins(host, params, classifyCloudflareIPs, net.LookupHost)
 		if err != nil {
 			result.warnf("cloudflare origin lookup: %v", err)
 		} else {
