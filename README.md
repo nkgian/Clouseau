@@ -40,8 +40,7 @@ module (`ip_lookup` has no skip flag).
 ```yaml
 tasks:
   - name: "whois_lookup"
-    params:
-      server: "whois.verisign-grs.com"   # optional, "host:port" is accepted
+    # server is optional; without it the server is discovered via IANA
 
   - name: "html_scan"
     params:

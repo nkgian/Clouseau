@@ -1,8 +1,6 @@
 tasks:
   - name: "whois_lookup"
-    params:
-      server: "whois.verisign-grs.com"
-  
+
   - name: "html_scan"
     params:
       max_depth: 3

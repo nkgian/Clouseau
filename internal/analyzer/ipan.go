@@ -292,7 +292,13 @@ func (w *IpLookup) Run(url string, params map[string]interface{}) (interface{}, 
 	result.Records.NS = lookupNS(host)
 	result.Records.MX = lookupMX(host)
 	result.Records.TXT = lookupTXT(host)
-	result.Email = lookupEmailSecurity(host, result.Records.TXT)
+
+	emailDomain := submodules.BaseDomain(host)
+	emailTXT := result.Records.TXT
+	if emailDomain != host {
+		emailTXT = lookupTXT(emailDomain)
+	}
+	result.Email = lookupEmailSecurity(emailDomain, emailTXT)
 
 	for i := range addresses {
 		if names, err := net.LookupAddr(addresses[i].IP); err == nil {
@@ -420,7 +426,10 @@ func classifyCloudflareIPs(ips []string) (map[string]bool, error) {
 	classified := make(map[string]bool, len(ips))
 	for _, ip := range ips {
 		asn, ok := info[ip]
-		classified[ip] = ok && (asn.ASN == "13335" || strings.Contains(strings.ToLower(asn.Name), "cloudflare"))
+		if !ok {
+			continue
+		}
+		classified[ip] = asn.ASN == "13335" || strings.Contains(strings.ToLower(asn.Name), "cloudflare")
 	}
 	return classified, nil
 }

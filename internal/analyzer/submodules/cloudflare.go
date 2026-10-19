@@ -39,7 +39,7 @@ func (r *OriginResult) String() string {
 }
 
 func LookupOrigins(host string, params map[string]interface{}, isCloudflare Classifier) (*OriginResult, error) {
-	domain := baseDomain(host)
+	domain := BaseDomain(host)
 	names, err := subdomains(params)
 	if err != nil {
 		return nil, err
@@ -92,9 +92,11 @@ func LookupOrigins(host string, params map[string]interface{}, isCloudflare Clas
 
 		var originIPs []string
 		for _, ip := range item.ips {
-			if !classified[ip] {
-				originIPs = append(originIPs, ip)
+			belongs, known := classified[ip]
+			if !known || belongs {
+				continue
 			}
+			originIPs = append(originIPs, ip)
 		}
 		if len(originIPs) > 0 {
 			result.Candidates = append(result.Candidates, OriginCandidate{Subdomain: item.fqdn, IPs: originIPs})
@@ -132,7 +134,7 @@ func subdomains(params map[string]interface{}) ([]string, error) {
 	return names, nil
 }
 
-func baseDomain(host string) string {
+func BaseDomain(host string) string {
 	labels := strings.Split(host, ".")
 	if len(labels) > 2 {
 		switch labels[0] {
