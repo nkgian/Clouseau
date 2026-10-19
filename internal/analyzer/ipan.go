@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"clouseau/internal/analyzer/submodules"
 )
 
 type IpLookup struct{}
@@ -73,13 +75,13 @@ type TLSInfo struct {
 }
 
 type IPResult struct {
-	Host             string                  `json:"host"`
-	Records          DNSRecords              `json:"records"`
-	Email            EmailSecurity           `json:"email_security"`
-	Addresses        []IPAddress             `json:"addresses"`
-	TLS              *TLSInfo                `json:"tls,omitempty"`
-	CloudflareOrigin *CloudflareOriginResult `json:"cloudflare_origin,omitempty"`
-	Warnings         []string                `json:"warnings,omitempty"`
+	Host             string                   `json:"host"`
+	Records          DNSRecords               `json:"records"`
+	Email            EmailSecurity            `json:"email_security"`
+	Addresses        []IPAddress              `json:"addresses"`
+	TLS              *TLSInfo                 `json:"tls,omitempty"`
+	CloudflareOrigin *submodules.OriginResult `json:"cloudflare_origin,omitempty"`
+	Warnings         []string                 `json:"warnings,omitempty"`
 }
 
 type ASInfo struct {
@@ -381,7 +383,7 @@ func (w *IpLookup) Run(url string, params map[string]interface{}) (interface{}, 
 	}
 
 	if !boolParam(params, "skip_origin_lookup", false) && net.ParseIP(host) == nil && hasProvider(addresses, "Cloudflare") {
-		origin, err := lookupCloudflareOrigins(host, params)
+		origin, err := submodules.LookupOrigins(host, params, classifyCloudflareIPs)
 		if err != nil {
 			result.warnf("cloudflare origin lookup: %v", err)
 		} else {
@@ -402,6 +404,25 @@ func hasProvider(addresses []IPAddress, label string) bool {
 		}
 	}
 	return false
+}
+
+func classifyCloudflareIPs(ips []string) (map[string]bool, error) {
+	addresses := make([]IPAddress, 0, len(ips))
+	for _, ip := range ips {
+		addresses = append(addresses, IPAddress{IP: ip, Scope: "public"})
+	}
+
+	info, err := lookupASN(addresses)
+	if err != nil {
+		return nil, err
+	}
+
+	classified := make(map[string]bool, len(ips))
+	for _, ip := range ips {
+		asn, ok := info[ip]
+		classified[ip] = ok && (asn.ASN == "13335" || strings.Contains(strings.ToLower(asn.Name), "cloudflare"))
+	}
+	return classified, nil
 }
 
 func classifyAddresses(ips []string) ([]IPAddress, []string, []string) {

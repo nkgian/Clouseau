@@ -1,4 +1,4 @@
-package analyzer
+package submodules
 
 import (
 	"fmt"
@@ -14,13 +14,15 @@ type OriginCandidate struct {
 	IPs       []string `json:"ips"`
 }
 
-type CloudflareOriginResult struct {
+type OriginResult struct {
 	Domain     string            `json:"domain"`
 	Checked    int               `json:"checked"`
 	Candidates []OriginCandidate `json:"candidates,omitempty"`
 }
 
-func (r *CloudflareOriginResult) String() string {
+type Classifier func(ips []string) (map[string]bool, error)
+
+func (r *OriginResult) String() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[cloudflare_ip_lookup] %s (%d subdomains resolved)\n", r.Domain, r.Checked)
 
@@ -36,9 +38,9 @@ func (r *CloudflareOriginResult) String() string {
 	return b.String()
 }
 
-func lookupCloudflareOrigins(host string, params map[string]interface{}) (*CloudflareOriginResult, error) {
+func LookupOrigins(host string, params map[string]interface{}, isCloudflare Classifier) (*OriginResult, error) {
 	domain := baseDomain(host)
-	names, err := cloudflareSubdomains(params)
+	names, err := subdomains(params)
 	if err != nil {
 		return nil, err
 	}
@@ -71,20 +73,17 @@ func lookupCloudflareOrigins(host string, params map[string]interface{}) (*Cloud
 	}
 	wg.Wait()
 
-	candidates := make([]IPAddress, 0, len(resolutions))
+	var resolved []string
 	for _, item := range resolutions {
-		for _, ip := range item.ips {
-			candidates = append(candidates, IPAddress{IP: ip, Scope: "public"})
-		}
+		resolved = append(resolved, item.ips...)
 	}
 
-	asnInfo, err := lookupASN(candidates)
+	classified, err := isCloudflare(uniqueSorted(resolved))
 	if err != nil {
 		return nil, fmt.Errorf("asn classification for %s failed: %w", domain, err)
 	}
 
-	result := &CloudflareOriginResult{Domain: domain}
-
+	result := &OriginResult{Domain: domain}
 	for _, item := range resolutions {
 		if item.fqdn == "" {
 			continue
@@ -93,7 +92,7 @@ func lookupCloudflareOrigins(host string, params map[string]interface{}) (*Cloud
 
 		var originIPs []string
 		for _, ip := range item.ips {
-			if !isCloudflareAddress(ip, asnInfo) {
+			if !classified[ip] {
 				originIPs = append(originIPs, ip)
 			}
 		}
@@ -109,9 +108,8 @@ func lookupCloudflareOrigins(host string, params map[string]interface{}) (*Cloud
 	return result, nil
 }
 
-// See cloudflare_subdomains.txt for dirs
-func cloudflareSubdomains(params map[string]interface{}) ([]string, error) {
-	path := stringParam(params, "subdomains_file")
+func subdomains(params map[string]interface{}) ([]string, error) {
+	path, _ := params["subdomains_file"].(string)
 	if path == "" {
 		path = "cloudflare_subdomains.txt"
 	}
@@ -143,17 +141,6 @@ func baseDomain(host string) string {
 		}
 	}
 	return host
-}
-
-func isCloudflareAddress(rawIP string, asnInfo map[string]ASInfo) bool {
-	info, ok := asnInfo[rawIP]
-	if !ok {
-		return false
-	}
-	if info.ASN == "13335" {
-		return true
-	}
-	return strings.Contains(strings.ToLower(info.Name), "cloudflare")
 }
 
 func uniqueSorted(values []string) []string {
