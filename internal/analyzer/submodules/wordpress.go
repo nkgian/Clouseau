@@ -3,18 +3,13 @@ package submodules
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
+	"sync"
 )
 
-const (
-	wpProbeTimeout = 8 * time.Second
-	wpProbeBytes   = 1 << 20
-	wpAuthorPages  = 3
-)
+const wpAuthorPages = 3
 
 type WordPressDetection struct {
 	Evidence []string `json:"evidence,omitempty"`
@@ -138,6 +133,21 @@ func (d *WordPressDetection) Merge(other *WordPressDetection) {
 	}
 }
 
+type wpProbeResult struct {
+	Endpoints  []WPEndpoint
+	Version    string
+	Source     string
+	Login      bool
+	REST       bool
+	XMLRPC     bool
+	Sitemap    bool
+	SiteName   string
+	Namespaces []string
+	Users      []WPUser
+	Authors    []string
+	RestPath   string
+}
+
 func InspectWordPress(baseURL string, detection *WordPressDetection) *WordPressResult {
 	result := &WordPressResult{
 		Version:  detection.Version,
@@ -150,68 +160,129 @@ func InspectWordPress(baseURL string, detection *WordPressDetection) *WordPressR
 	}
 
 	client := &http.Client{
-		Timeout: wpProbeTimeout,
+		Timeout: probeTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
 	base := strings.TrimSuffix(baseURL, "/")
 
-	probeReadme(client, base, result)
-	probeLogin(client, base, result)
-	probeXMLRPC(client, base, result)
-	if restPath := probeREST(client, base, result); restPath != "" {
-		probeUsers(client, base, restPath, result)
+	var (
+		readme  wpProbeResult
+		login   wpProbeResult
+		xmlrpc  wpProbeResult
+		rest    wpProbeResult
+		sitemap wpProbeResult
+		authors wpProbeResult
+		wg      sync.WaitGroup
+	)
+	wg.Add(6)
+	go func() { defer wg.Done(); readme = probeReadme(client, base) }()
+	go func() { defer wg.Done(); login = probeLogin(client, base) }()
+	go func() { defer wg.Done(); xmlrpc = probeXMLRPC(client, base) }()
+	go func() { defer wg.Done(); rest = probeREST(client, base) }()
+	go func() { defer wg.Done(); sitemap = probeSitemap(client, base) }()
+	go func() { defer wg.Done(); authors = probeAuthors(client, base) }()
+	wg.Wait()
+
+	if result.Version == "" && readme.Version != "" {
+		result.Version = readme.Version
+		result.VersionSource = readme.Source
 	}
-	probeSitemap(client, base, result)
-	probeFeed(client, base, result)
-	probeAuthors(client, base, result)
+
+	var (
+		users wpProbeResult
+		feed  wpProbeResult
+		wg2   sync.WaitGroup
+	)
+	if rest.REST {
+		wg2.Add(1)
+		go func() { defer wg2.Done(); users = probeUsers(client, base, rest.RestPath) }()
+	}
+	if result.Version == "" {
+		wg2.Add(1)
+		go func() { defer wg2.Done(); feed = probeFeed(client, base) }()
+	}
+	wg2.Wait()
+
+	if result.Version == "" && feed.Version != "" {
+		result.Version = feed.Version
+		result.VersionSource = feed.Source
+	}
+
+	result.Login = login.Login
+	result.REST = rest.REST
+	result.XMLRPC = xmlrpc.XMLRPC
+	result.Sitemap = sitemap.Sitemap
+	result.SiteName = rest.SiteName
+	result.Namespaces = rest.Namespaces
+	result.Users = users.Users
+	result.Authors = authors.Authors
+
+	result.Endpoints = append(result.Endpoints, readme.Endpoints...)
+	result.Endpoints = append(result.Endpoints, login.Endpoints...)
+	result.Endpoints = append(result.Endpoints, xmlrpc.Endpoints...)
+	result.Endpoints = append(result.Endpoints, rest.Endpoints...)
+	result.Endpoints = append(result.Endpoints, users.Endpoints...)
+	result.Endpoints = append(result.Endpoints, sitemap.Endpoints...)
+	result.Endpoints = append(result.Endpoints, feed.Endpoints...)
 
 	return result
 }
 
-func probeReadme(client *http.Client, base string, result *WordPressResult) {
-	status, body, _, err := wpGet(client, base+"/readme.html")
+func probeReadme(client *http.Client, base string) wpProbeResult {
+	var out wpProbeResult
+
+	status, body, _, err := httpGet(client, base+"/readme.html")
 	if err != nil {
-		return
+		return out
 	}
-	result.Endpoints = append(result.Endpoints, WPEndpoint{Path: "/readme.html", Status: status})
-	if status == http.StatusOK && result.Version == "" {
+	out.Endpoints = append(out.Endpoints, WPEndpoint{Path: "/readme.html", Status: status})
+	if status == http.StatusOK {
 		if match := wpReadmeVersion.FindSubmatch(body); match != nil {
-			result.Version = string(match[1])
-			result.VersionSource = "readme.html"
+			out.Version = string(match[1])
+			out.Source = "readme.html"
 		}
 	}
+	return out
 }
 
-func probeLogin(client *http.Client, base string, result *WordPressResult) {
-	status, body, _, err := wpGet(client, base+"/wp-login.php")
+func probeLogin(client *http.Client, base string) wpProbeResult {
+	var out wpProbeResult
+
+	status, body, _, err := httpGet(client, base+"/wp-login.php")
 	if err != nil {
-		return
+		return out
 	}
-	result.Endpoints = append(result.Endpoints, WPEndpoint{Path: "/wp-login.php", Status: status})
+	out.Endpoints = append(out.Endpoints, WPEndpoint{Path: "/wp-login.php", Status: status})
 	page := string(body)
-	result.Login = status == http.StatusOK &&
+	out.Login = status == http.StatusOK &&
 		(strings.Contains(page, "user_login") || strings.Contains(page, `id="loginform"`))
+	return out
 }
 
-func probeXMLRPC(client *http.Client, base string, result *WordPressResult) {
-	status, body, _, err := wpGet(client, base+"/xmlrpc.php")
+func probeXMLRPC(client *http.Client, base string) wpProbeResult {
+	var out wpProbeResult
+
+	status, body, _, err := httpGet(client, base+"/xmlrpc.php")
 	if err != nil {
-		return
+		return out
 	}
-	result.Endpoints = append(result.Endpoints, WPEndpoint{Path: "/xmlrpc.php", Status: status})
-	result.XMLRPC = status == http.StatusMethodNotAllowed ||
+	out.Endpoints = append(out.Endpoints, WPEndpoint{Path: "/xmlrpc.php", Status: status})
+	out.XMLRPC = status == http.StatusMethodNotAllowed ||
 		strings.Contains(string(body), "XML-RPC server accepts POST requests only")
+	return out
 }
 
-func probeREST(client *http.Client, base string, result *WordPressResult) string {
+func probeREST(client *http.Client, base string) wpProbeResult {
+	var out wpProbeResult
+
 	for _, path := range []string{"/wp-json/", "/?rest_route=/"} {
-		status, body, _, err := wpGet(client, base+path)
+		status, body, _, err := httpGet(client, base+path)
 		if err != nil {
 			continue
 		}
-		result.Endpoints = append(result.Endpoints, WPEndpoint{Path: path, Status: status})
+		out.Endpoints = append(out.Endpoints, WPEndpoint{Path: path, Status: status})
 		if status != http.StatusOK {
 			continue
 		}
@@ -224,77 +295,85 @@ func probeREST(client *http.Client, base string, result *WordPressResult) string
 			continue
 		}
 
-		result.REST = true
-		result.SiteName = index.Name
-		result.Namespaces = uniqueSorted(index.Namespaces)
-		return path
+		out.REST = true
+		out.SiteName = index.Name
+		out.Namespaces = uniqueSorted(index.Namespaces)
+		out.RestPath = path
+		return out
 	}
-	return ""
+	return out
 }
 
-func probeUsers(client *http.Client, base, restPath string, result *WordPressResult) {
+func probeUsers(client *http.Client, base, restPath string) wpProbeResult {
+	var out wpProbeResult
+
 	path := "/wp-json/wp/v2/users"
 	if restPath != "/wp-json/" {
 		path = "/?rest_route=/wp/v2/users"
 	}
 
-	status, body, _, err := wpGet(client, base+path)
+	status, body, _, err := httpGet(client, base+path)
 	if err != nil {
-		return
+		return out
 	}
-	result.Endpoints = append(result.Endpoints, WPEndpoint{Path: path, Status: status})
+	out.Endpoints = append(out.Endpoints, WPEndpoint{Path: path, Status: status})
 	if status != http.StatusOK {
-		return
+		return out
 	}
 
 	var users []WPUser
 	if json.Unmarshal(body, &users) != nil {
-		return
+		return out
 	}
 	for _, user := range users {
 		if user.Name != "" || user.Slug != "" {
-			result.Users = append(result.Users, user)
+			out.Users = append(out.Users, user)
 		}
 	}
+	return out
 }
 
-func probeSitemap(client *http.Client, base string, result *WordPressResult) {
+func probeSitemap(client *http.Client, base string) wpProbeResult {
+	var out wpProbeResult
+
 	for _, path := range []string{"/wp-sitemap.xml", "/sitemap_index.xml"} {
-		status, _, _, err := wpGet(client, base+path)
+		status, _, _, err := httpGet(client, base+path)
 		if err != nil {
 			continue
 		}
-		result.Endpoints = append(result.Endpoints, WPEndpoint{Path: path, Status: status})
+		out.Endpoints = append(out.Endpoints, WPEndpoint{Path: path, Status: status})
 		if status == http.StatusOK {
-			result.Sitemap = true
-			return
+			out.Sitemap = true
+			return out
 		}
 	}
+	return out
 }
 
-func probeFeed(client *http.Client, base string, result *WordPressResult) {
-	if result.Version != "" {
-		return
-	}
+func probeFeed(client *http.Client, base string) wpProbeResult {
+	var out wpProbeResult
 
-	status, body, _, err := wpGet(client, base+"/feed/")
+	status, body, _, err := httpGet(client, base+"/feed/")
 	if err != nil {
-		return
+		return out
 	}
-	result.Endpoints = append(result.Endpoints, WPEndpoint{Path: "/feed/", Status: status})
+	out.Endpoints = append(out.Endpoints, WPEndpoint{Path: "/feed/", Status: status})
 	if status != http.StatusOK {
-		return
+		return out
 	}
 	if match := wpFeedVersion.FindSubmatch(body); match != nil {
-		result.Version = string(match[1])
-		result.VersionSource = "feed"
+		out.Version = string(match[1])
+		out.Source = "feed"
 	}
+	return out
 }
 
-func probeAuthors(client *http.Client, base string, result *WordPressResult) {
+func probeAuthors(client *http.Client, base string) wpProbeResult {
+	var out wpProbeResult
+
 	var authors []string
 	for id := 1; id <= wpAuthorPages; id++ {
-		status, _, location, err := wpGet(client, fmt.Sprintf("%s/?author=%d", base, id))
+		status, _, location, err := httpGet(client, fmt.Sprintf("%s/?author=%d", base, id))
 		if err != nil || status < 300 || status >= 400 || location == "" {
 			continue
 		}
@@ -302,27 +381,8 @@ func probeAuthors(client *http.Client, base string, result *WordPressResult) {
 			authors = append(authors, match[1])
 		}
 	}
-	result.Authors = uniqueSorted(authors)
-}
-
-func wpGet(client *http.Client, target string) (int, []byte, string, error) {
-	request, err := http.NewRequest(http.MethodGet, target, nil)
-	if err != nil {
-		return 0, nil, "", err
-	}
-	request.Header.Set("User-Agent", "clouseau/1.0")
-
-	response, err := client.Do(request)
-	if err != nil {
-		return 0, nil, "", err
-	}
-	defer response.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(response.Body, wpProbeBytes))
-	if err != nil {
-		return response.StatusCode, nil, response.Header.Get("Location"), err
-	}
-	return response.StatusCode, body, response.Header.Get("Location"), nil
+	out.Authors = uniqueSorted(authors)
+	return out
 }
 
 func (r *WordPressResult) String() string {

@@ -19,6 +19,7 @@ var outputFile string
 // Define variables to hold the state of our flags
 var skipWhois bool
 var skipHTML bool
+var skipRobots bool
 
 type taskResult struct {
 	Task   string      `json:"task"`
@@ -51,6 +52,7 @@ var rootCmd = &cobra.Command{
 		skipMap := map[string]bool{
 			"whois_lookup": skipWhois,
 			"html_scan":    skipHTML,
+			"robots_scan":  skipRobots,
 		}
 
 		report := outputReport{
@@ -123,4 +125,5 @@ func init() {
 	// Format: variable pointer, "flag-name", shorthand (empty here), default value, "description"
 	rootCmd.Flags().BoolVar(&skipWhois, "skip-whois", false, "Skip the WHOIS lookup module")
 	rootCmd.Flags().BoolVar(&skipHTML, "skip-html", false, "Skip the HTML scanning module")
+	rootCmd.Flags().BoolVar(&skipRobots, "skip-robots", false, "Skip the robots.txt scanning module")
 }

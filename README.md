@@ -1,7 +1,7 @@
 # Clouseau
 
 A (heavily WIP) CLI tool for website analysis and reconnaissance. Runs a configurable set of
-modules against a target URL, prints a human-readable report
+modules against a target URL and spits out a human-readable report (maybe)
 
 ## Requirements
 
@@ -31,6 +31,7 @@ clouseau [url] [flags]
 | `-o`, `--output` | Write the analysis report as JSON to this file |
 | `--skip-whois` | Skip the `whois_lookup` module |
 | `--skip-html` | Skip the `html_scan` module |
+| `--skip-robots` | Skip the `robots_scan` module |
 
 Modules are driven by the config file; removing a task from it disables that
 module (`ip_lookup` has no skip flag).
@@ -47,6 +48,8 @@ tasks:
       max_depth: 3
       extract_links: true
       # skip_wordpress: true
+
+  - name: "robots_scan"
 
   - name: "ip_lookup"
     params:
@@ -85,6 +88,12 @@ plugin/theme asset paths) and, when detected, probes public endpoints:
 - author slugs via `/?author=1..3` redirects
 
 Results appear under `wordpress` in the report.
+
+### `robots_scan`
+
+Fetches `/robots.txt` and reports the status, groups (with allowed/disallowed
+counts), sitemaps, and disallowed paths that look sensitive (`admin`,
+`backup`, `.env`, `staging`, ...).
 
 ### `ip_lookup`
 
@@ -201,8 +210,8 @@ go test ./...
 
 ```
 cmd/                          CLI entry point and flags
-internal/analyzer/            modules: whois, html, ip
-internal/analyzer/submodules/ provider/stack submodules (cloudflare, wordpress)
+internal/analyzer/            modules: whois, html, robots, ip
+internal/analyzer/submodules/ provider/stack submodules (cloudflare, wordpress, robots)
 internal/config/              YAML config loading
 tests/                        external package tests
 ```

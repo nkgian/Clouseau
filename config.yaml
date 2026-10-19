@@ -6,6 +6,8 @@ tasks:
       max_depth: 3
       extract_links: true
 
+  - name: "robots_scan"
+
   - name: "ip_lookup"
     params:
       tls: true
