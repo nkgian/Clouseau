@@ -152,6 +152,26 @@ func TestWhoisRunIgnoresNonFieldLines(t *testing.T) {
 	}
 }
 
+func TestWhoisRunIgnoresDatabaseMarkerLines(t *testing.T) {
+	response := strings.Join([]string{
+		"Domain Name: EXAMPLE.COM",
+		">>> Last update of whois database: 2026-10-19T16:47:19Z <<<",
+		"Registrar: Example",
+	}, "\r\n") + "\r\n"
+
+	server, _ := startFakeWhoisServer(t, response)
+	whois := runWhois(t, "example.com", server)
+
+	for key, value := range whois.Fields {
+		if strings.Contains(key, ">>>") || strings.Contains(value, "<<<") {
+			t.Errorf("Fields = %v, want database marker lines to be ignored", whois.Fields)
+		}
+	}
+	if got := whois.Fields["Registrar"]; got != "Example" {
+		t.Errorf("Fields[Registrar] = %q, want %q", got, "Example")
+	}
+}
+
 func TestWhoisRunErrorsWhenServerUnreachable(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

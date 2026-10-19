@@ -120,7 +120,9 @@ func parseWhoisFields(raw string) map[string]string {
 	fields := map[string]string{}
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(strings.TrimRight(line, "\r"))
-		if line == "" || strings.HasPrefix(line, "%") || strings.HasPrefix(line, "#") {
+		// fix for whois lokkups with inconvenient formatting, e.g. ">>> Last update of whois database": "2026-10-19T16:47:19Z <<<""
+		if line == "" || strings.HasPrefix(line, "%") || strings.HasPrefix(line, "#") ||
+			strings.HasPrefix(line, ">>>") || strings.HasPrefix(line, "<<<") {
 			continue
 		}
 
