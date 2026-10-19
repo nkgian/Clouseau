@@ -8,6 +8,8 @@ tasks:
 
   - name: "robots_scan"
 
+  - name: "headers_scan"
+
   - name: "ip_lookup"
     params:
       tls: true

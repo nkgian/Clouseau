@@ -14,6 +14,7 @@ var Registry = map[string]Analyzer{
 	"whois_lookup": &WhoisAnalyzer{},
 	"html_scan":    &HTMLAnalyzer{},
 	"robots_scan":  &RobotsAnalyzer{},
+	"headers_scan": &HeadersAnalyzer{},
 }
 
 func normalizeURL(raw string) string {

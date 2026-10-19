@@ -20,6 +20,7 @@ var outputFile string
 var skipWhois bool
 var skipHTML bool
 var skipRobots bool
+var skipHeaders bool
 
 type taskResult struct {
 	Task   string      `json:"task"`
@@ -53,6 +54,7 @@ var rootCmd = &cobra.Command{
 			"whois_lookup": skipWhois,
 			"html_scan":    skipHTML,
 			"robots_scan":  skipRobots,
+			"headers_scan": skipHeaders,
 		}
 
 		report := outputReport{
@@ -126,4 +128,5 @@ func init() {
 	rootCmd.Flags().BoolVar(&skipWhois, "skip-whois", false, "Skip the WHOIS lookup module")
 	rootCmd.Flags().BoolVar(&skipHTML, "skip-html", false, "Skip the HTML scanning module")
 	rootCmd.Flags().BoolVar(&skipRobots, "skip-robots", false, "Skip the robots.txt scanning module")
+	rootCmd.Flags().BoolVar(&skipHeaders, "skip-headers", false, "Skip the security headers scanning module")
 }

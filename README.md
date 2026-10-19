@@ -32,6 +32,7 @@ clouseau [url] [flags]
 | `--skip-whois` | Skip the `whois_lookup` module |
 | `--skip-html` | Skip the `html_scan` module |
 | `--skip-robots` | Skip the `robots_scan` module |
+| `--skip-headers` | Skip the `headers_scan` module |
 
 Modules are driven by the config file; removing a task from it disables that
 module (`ip_lookup` has no skip flag).
@@ -50,6 +51,8 @@ tasks:
       # skip_wordpress: true
 
   - name: "robots_scan"
+
+  - name: "headers_scan"
 
   - name: "ip_lookup"
     params:
@@ -94,6 +97,16 @@ Results appear under `wordpress` in the report.
 Fetches `/robots.txt` and reports the status, groups (with allowed/disallowed
 counts), sitemaps, and disallowed paths that look sensitive (`admin`,
 `backup`, `.env`, `staging`, ...).
+
+### `headers_scan`
+
+Fetches the target once and audits the response headers:
+
+- HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, and
+  Permissions-Policy, each reported as `ok`, `weak`, or `missing`
+- `Set-Cookie` flags (`Secure`, `HttpOnly`, `SameSite`)
+- CORS behavior, probing with a foreign `Origin` to detect reflection
+- server banner and `X-Powered-By`
 
 ### `ip_lookup`
 
@@ -210,7 +223,7 @@ go test ./...
 
 ```
 cmd/                          CLI entry point and flags
-internal/analyzer/            modules: whois, html, robots, ip
+internal/analyzer/            modules: whois, html, robots, headers, ip
 internal/analyzer/submodules/ provider/stack submodules (cloudflare, wordpress, robots)
 internal/config/              YAML config loading
 tests/                        external package tests
