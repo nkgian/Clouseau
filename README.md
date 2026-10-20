@@ -29,6 +29,7 @@ clouseau [url] [flags]
 | --- | --- |
 | `-c`, `--config` | Path to the config file (default `config.yaml`) |
 | `-o`, `--output` | Write the analysis report as JSON to this file |
+| `-t`, `--output-txt` | Write the analysis report as plain text to this file |
 | `--skip-whois` | Skip the `whois_lookup` module |
 | `--skip-html` | Skip the `html_scan` module |
 | `--skip-robots` | Skip the `robots_scan` module |
@@ -36,6 +37,9 @@ clouseau [url] [flags]
 | `--skip-domain` | Skip the `domain_scan` module |
 | `--skip-threat` | Skip the `threat_lookup` module |
 | `--skip-infra` | Skip the `infra_scan` module |
+
+`-o` and `-t` write the same results as JSON and plain text; they can be used
+together.
 
 Modules are driven by the config file; removing a task from it disables that
 module (`ip_lookup` has no skip flag).
@@ -216,6 +220,12 @@ Write a JSON report:
 go run . -o report.json https://example.com
 ```
 
+Write a plain-text report (`-t`):
+
+```sh
+go run . -t report.txt https://example.com
+```
+
 Use a custom config and skip the WHOIS and HTML modules:
 
 ```sh
@@ -282,6 +292,23 @@ task (with either `result` or `error`):
     }
   ]
 }
+```
+
+`-t` writes the same report as plain text, one field per line, with nested
+values indented:
+
+```text
+target: https://example.com
+generated_at: 2026-10-19T01:30:00Z
+tasks: 2
+
+task: whois_lookup
+domain: example.com
+server: whois.iana.org
+
+task: html_scan
+start_url: https://example.com
+pages: []
 ```
 
 ## Tests
