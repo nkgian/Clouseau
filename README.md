@@ -181,8 +181,8 @@ Maps the target to its DNS and network footprint:
 - **Provider detection** — matches CNAME/PTR/ASN names against known CDNs and
   hosting providers (Cloudflare, Akamai, Fastly, CloudFront, ...)
 - **Email security** — SPF (from TXT), DMARC and its policy (from
-  `_dmarc.<domain>`), and BIMI (from `default._bimi.<domain>`), falling back
-  to the parent domain for `www`/`m`-style hosts
+  `_dmarc.<domain>`), and BIMI (from `default._bimi.<domain>`), looked up on
+  the registered (eTLD+1) domain
 
 Optional extras, off unless enabled in the task params (the shipped
 `config.yaml` turns all of them on):

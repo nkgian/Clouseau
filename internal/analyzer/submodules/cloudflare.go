@@ -2,10 +2,13 @@ package submodules
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"sort"
 	"strings"
 	"sync"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 type OriginCandidate struct {
@@ -135,7 +138,20 @@ func subdomains(params map[string]interface{}) ([]string, error) {
 	return names, nil
 }
 
+// BaseDomain reduces a host to its registered domain (eTLD+1) using the
+// public suffix list. Hosts it cannot classify or that already are base
+// domains are returned unchanged, apart from a www-style prefix on fallback.
 func BaseDomain(host string) string {
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	if host == "" || net.ParseIP(host) != nil {
+		return host
+	}
+	if domain, err := publicsuffix.EffectiveTLDPlusOne(host); err == nil {
+		return domain
+	}
+
+	// Fallback for hosts the list cannot resolve, e.g. "localhost" or
+	// hosts that are themselves public suffixes ("co.uk").
 	labels := strings.Split(host, ".")
 	if len(labels) > 2 {
 		switch labels[0] {

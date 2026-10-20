@@ -23,11 +23,14 @@ func newThreatServer(t *testing.T) *httptest.Server {
 			return
 		}
 		_ = r.ParseForm()
-		if r.PostFormValue("host") == "evil.example" {
+		switch r.PostFormValue("host") {
+		case "evil.example":
 			fmt.Fprint(w, `{"query_status":"ok","urls":[{"url":"https://evil.example/payload"}]}`)
-			return
+		case "limited.example":
+			fmt.Fprint(w, `{"query_status":"rate_limited"}`)
+		default:
+			fmt.Fprint(w, `{"query_status":"no_results"}`)
 		}
-		fmt.Fprint(w, `{"query_status":"no_results"}`)
 	})
 	mux.HandleFunc("/cdx", func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.RawQuery, "clean.example") {
@@ -96,6 +99,32 @@ func TestThreatRunClearsCleanHost(t *testing.T) {
 	}
 	if threat.FirstSeen != "" {
 		t.Fatalf("first seen = %q, want empty", threat.FirstSeen)
+	}
+}
+
+func TestThreatRunURLhausRateLimitedIsError(t *testing.T) {
+	server := newThreatServer(t)
+
+	result, err := (&analyzer.ThreatAnalyzer{}).Run("https://limited.example", threatParams(server))
+	if err != nil {
+		t.Fatalf("Run returned unexpected error: %v", err)
+	}
+	threat := result.(*analyzer.ThreatResult)
+
+	var urlhaus *analyzer.ThreatSource
+	for i := range threat.Sources {
+		if threat.Sources[i].Source == "urlhaus" {
+			urlhaus = &threat.Sources[i]
+		}
+	}
+	if urlhaus == nil {
+		t.Fatal("urlhaus source missing from result")
+	}
+	if urlhaus.Status != "error" {
+		t.Fatalf("urlhaus status = %q, want error for rate_limited query_status", urlhaus.Status)
+	}
+	if !strings.Contains(urlhaus.Detail, "rate_limited") {
+		t.Fatalf("urlhaus detail = %q, want it to mention rate_limited", urlhaus.Detail)
 	}
 }
 

@@ -30,6 +30,28 @@ func staticResolver(hosts map[string][]string) submodules.Resolver {
 	}
 }
 
+func TestBaseDomainRegisteredDomain(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"www.example.com", "example.com"},
+		{"shop.example.co.uk", "example.co.uk"},
+		{"m.example.co.uk", "example.co.uk"},
+		{"example.github.io", "example.github.io"},
+		{"example.com", "example.com"},
+		{"EXAMPLE.COM", "example.com"},
+		{"localhost", "localhost"},
+		{"co.uk", "co.uk"},
+		{"127.0.0.1", "127.0.0.1"},
+	}
+	for _, tc := range cases {
+		if got := submodules.BaseDomain(tc.in); got != tc.want {
+			t.Errorf("BaseDomain(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestLookupOriginsFindsOriginCandidates(t *testing.T) {
 	path := writeSubdomains(t, "# comment\nwww\nmail\napi\ncdn\nmail\n\n")
 	resolver := staticResolver(map[string][]string{

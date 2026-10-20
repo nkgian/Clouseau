@@ -184,8 +184,12 @@ func checkURLhaus(client *http.Client, endpoint, host, key string) ThreatSource 
 				break
 			}
 		}
-	default:
+	case "no_results":
 		source.Status = threatClear
+	default:
+		// rate_limited, invalid_auth_key, missing_params, ... must never read as clear
+		source.Status = threatError
+		source.Detail = fmt.Sprintf("unexpected query_status %q", response.QueryStatus)
 	}
 	return source
 }
