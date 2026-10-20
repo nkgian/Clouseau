@@ -1,7 +1,7 @@
 # Clouseau
 
 A (heavily WIP) CLI tool for website analysis and reconnaissance. Runs a configurable set of
-modules against a target URL and spits out a human-readable report (maybe)
+modules against a target URL and returns a human-readable report.
 
 ## Requirements
 
