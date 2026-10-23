@@ -3,6 +3,8 @@
 A (heavily WIP) CLI tool for website analysis and reconnaissance. Runs a configurable set of
 modules against a target URL and returns a human-readable report.
 
+Primarily designed to analyze phishing and state-sponsored disinfo sites.
+
 ## Requirements
 
 - Go 1.27+
